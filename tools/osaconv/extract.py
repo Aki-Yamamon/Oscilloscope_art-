@@ -235,3 +235,23 @@ def fit_audio_to_frames(
     result = np.full(target_length, AUDIO_SILENCE, dtype=np.uint8)
     result[:len(samples)] = samples
     return result
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m osaconv.extract <video_path>")
+        raise SystemExit(1)
+
+    path = sys.argv[1]
+    info = get_video_info(path)
+    print(info)
+
+    n = sum(1 for _ in iter_frames(path, max_frames=60))
+    print("frames:", n)
+
+    audio = extract_audio(path, duration_sec=2.0)
+    if len(audio) > 0:
+        print("audio samples:", len(audio), "min/max:", audio.min(), audio.max())
+    else:
+        print("audio samples: 0 (no audio)")
