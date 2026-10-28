@@ -208,3 +208,5 @@ build/
 tune_*.png
 .DS_Store
 Thumbs.db
+
+tests
