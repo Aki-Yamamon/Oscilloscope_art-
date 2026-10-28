@@ -174,3 +174,39 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 動画・音声（サイズが大きく、権利の面でも公開しない）
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.webm
+*.mp3
+*.wav
+
+# 変換で作ったデータ
+*.osa
+!samples/*.osa
+
+# ESP32 に埋め込むために自動生成したヘッダ（約 8MB）
+firmware/osa_player/osa_data.h
+
+# ビルドの出力
+.pio/
+build/
+*.bin
+*.elf
+
+# 確認用の画像
+tune_*.png
+.DS_Store
+Thumbs.db
+
+tests
