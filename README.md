@@ -4,9 +4,13 @@
 
 `tools/` で、venv を有効にして実行します。`badapple.mp4` は `tools/` に置きます（Git には入れません）。
 
+<>は省いて以下のコマンドを実行してください。
 ```powershell
 cd tools
-python -m osaconv badapple.mp4 -o main.osa --start 33 --seconds 35 --invert --epsilon 1.5 --min-length 40 --points 1000
+
+python -m osaconv <ファイル名>.mp4 -o <生成ファイル名>.osa --start <開始秒> --seconds <終了秒> --invert --epsilon 1.5 --min-length 40 --points 1000
+
+python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --loop
 ```
 
 | オプション | 意味 |
@@ -20,22 +24,15 @@ python -m osaconv badapple.mp4 -o main.osa --start 33 --seconds 35 --invert --ep
 
 変換結果は `python scripts/view_osa.py main.osa --count 12` で、PC 上で確認できます。
 
-### 2. ESP32 に埋め込むヘッダを作る
+### 2. ESP32 に書き込む
 
-```powershell
-python scripts/osa2h.py main.osa -o ../firmware/osa_player/osa_data.h
-```
-
-`osa_data.h` は自動生成のファイル（約 8MB）で、Git には入れません。
-
-### 3. ESP32 に書き込む
-
-1. Arduino IDE で `firmware/osa_player/osa_player.ino` を開く
+1. Arduino IDE で `firmware/osa_stream.ino` を開く
 2. ボード: `ESP32 Dev Module`
 3. **Partition Scheme: `Huge APP (3MB No OTA/1MB SPIFFS)`**（これを選ばないと、データが入らない）
-4. 書き込み後、シリアルモニタ（115200 bps）で再生状況を確認できる
+4. **シリアルモニタは閉じること**
+5. - オシロには、**動く円**が出るはずです
 
-### 4. 配線
+### 3. 配線
 
 | ESP32 | オシロスコープ |
 |---|---|
@@ -45,8 +42,35 @@ python scripts/osa2h.py main.osa -o ../firmware/osa_player/osa_data.h
 
 オシロは XY モード、両チャンネルを DC カップリングにします。
 
-### 既知の問題
+### 4. 通信に余裕があるかを測る
 
-- 表示が傾く場合は、`ROTATE_DEG` と `ROTATE_SCALE` で補正できます。`firmware/xy_test/xy_test.ino` で値を確認します
-- 全長（約 3 分 40 秒）は、フラッシュに入りません。SPI の SD モジュールを使う `firmware/osa_player_sd/` が必要です
-- 音声は未実装です
+```powershell
+python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --benchmark 10
+```
+
+時刻を待たずに、最高の速さで10秒送ります。**`(+N/s)` の N が、通信の限界**です。
+
+| ボーレート | 理論上の限界（私の計算） |
+|---|---|
+| 921600 | 約 45 フレーム/秒 |
+| 2000000 | 約 99 フレーム/秒 |
+
+N が 30 を十分に超えれば、余裕があります。ぎりぎり（30〜35）だと、本番で途切れる可能性があります。2000000 を試すときは、**ESP32 の `BAUD` と、PC の `--baud` を両方**変えて、書き込み直してください。
+
+
+## 結果の読み方
+
+| 症状 | 意味・対処 |
+|---|---|
+| `crc` や `lost` が増え続ける | 通信が乱れています。ボーレートを下げる、短いケーブルに替える |
+| `[PC] skipped` が増える | PC の送信が間に合っていません。他のアプリを閉じる |
+| `ok` が 0 のまま、動く円しか出ない | ボーレートの不一致、シリアルモニタが開いている、のどちらかを確認する |
+| 動画の途中で円に戻る | データが1秒以上途切れています |
+| `tmo` が増える | 受信の途中で止まっています。ケーブルを確認する |
+
+
+## 気をつけること
+
+- **USB-シリアルチップの上限は、COM6 という名前だけでは分かりません。** デバイスマネージャーの「ポート (COM と LPT)」で、COM6 の名前を確認してください。一般的な仕様では、CP2102 は最大約 1Mbps、CH340 は約 2Mbps とされています。まず 921600 で試してください
+- ポートを開いた瞬間に、ESP32 がリセットされることがあります。対策として、DTR / RTS を無効にして開き、2秒待っています（`--reset-wait`）
+- `Serial.printf` による**デバッグ表示は、映像の通信と同じ線に混ざります**。状況は `STAT` の行としてだけ、返しています
