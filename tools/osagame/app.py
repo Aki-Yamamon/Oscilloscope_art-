@@ -137,11 +137,12 @@ def build_app(n_points: int, home_osa: str | None) -> App:
     app.register("homeview", HomePreviewScreen(home))        # メニューの HOME: home.osa だけを表示
     app.register("outro", OutroScreen(nyan, NYANCAT_WAV))    # BADAPPLE が最後まで再生されたあとの演出
 
+    from osagame.osatetris.tetris_screen import TetrisScreen # TETRIS本体の読み込み
     app.register("menu", MenuScreen(main_menu, back="home"))     # Esc → ホーム
     app.register("video", MenuScreen(video_menu, back="menu"))   # Esc → 上のメニュー
     app.register("game", MenuScreen(game_menu, back="menu"))
     app.register("textbox", TextBoxDemoScreen())                 # メニューからは外したが、画面は残してある
-    app.register("tetris", MessageScreen("TETRIS IS COMING SOON.", back="game"))   # 後で本体に差し替える
+    app.register("tetris", TetrisScreen(back="game"))            # プレースホルダーから実画面に差し替え
     app.register("pacman", MessageScreen("PAC MAN IS COMING SOON.", back="game"))
     app.register("expline", MessageScreen("EXPLINE IS COMING SOON."))
     app.goto("home")
@@ -198,8 +199,12 @@ def _run_player(pg, args, osa: Path, wav: Path) -> str:
 def _translate(pg, ev):
     """pygame のイベント → (key, ch)。対象外なら None。"""
     if ev.type == pg.KEYDOWN:
-        table = {pg.K_UP: "up", pg.K_DOWN: "down", pg.K_RETURN: "enter", pg.K_KP_ENTER: "enter",
-                 pg.K_ESCAPE: "esc", pg.K_BACKSPACE: "backspace"}
+        table = {
+            pg.K_UP: "up", pg.K_DOWN: "down", pg.K_LEFT: "left", pg.K_RIGHT: "right",
+            pg.K_RETURN: "enter", pg.K_KP_ENTER: "enter",
+            pg.K_ESCAPE: "esc", pg.K_BACKSPACE: "backspace",
+            pg.K_a: "a", pg.K_d: "d", pg.K_z: "z", pg.K_x: "x", pg.K_SPACE: "space"
+        }
         if ev.key in table:
             return table[ev.key], None
     elif ev.type == pg.TEXTINPUT:
