@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from osagame.font import ADVANCE, CELL_H, GLYPHS
-from osagame.screens import Screen
+from osagame.screens import SE_ENTER, SE_MOVE, Screen, play_se
 from osagame.ui import TextBox, center_x, rect_polyline, text_to_polylines
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]               # tools/
@@ -427,9 +427,12 @@ class VideoHistoryScreen(Screen):
             return
         elif key == "up":
             self.index = (self.index - 1) % len(self.entries)
+            play_se(app, SE_MOVE)
         elif key == "down":
             self.index = (self.index + 1) % len(self.entries)
+            play_se(app, SE_MOVE)
         elif key == "enter":
+            play_se(app, SE_ENTER)
             e = self.entries[self.index]
             if is_cached(e["id"]):
                 launch_video(app, e["id"], e.get("title", ""))

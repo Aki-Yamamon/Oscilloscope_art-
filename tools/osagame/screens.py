@@ -15,6 +15,17 @@ from pathlib import Path
 from osagame.ui import Menu, TextBox, center_x, text_to_polylines
 from osaconv.pack import read_osa
 
+# メニュー操作の効果音(.mp3)。置き場所は tools/source/。ファイルが無ければ、鳴らさないだけで動く
+SE_DIR = Path(__file__).resolve().parents[1] / "source"
+SE_MOVE = SE_DIR / "se_move.mp3"        # ↑ ↓ でカーソルを動かしたとき
+SE_ENTER = SE_DIR / "se_enter.mp3"      # Enter で決定したとき
+
+
+def play_se(app, path: Path) -> None:
+    """効果音を鳴らす。ファイルが無いときは何もしない(毎回エラーを出さない)。"""
+    if path.is_file():
+        app.audio.play_se(path)
+
 
 class Screen:
     def on_enter(self, app) -> None:
@@ -93,9 +104,12 @@ class MenuScreen(Screen):
     def handle(self, app, key, ch=None) -> None:
         if key == "up":
             self.menu.move(-1)
+            play_se(app, SE_MOVE)
         elif key == "down":
             self.menu.move(1)
+            play_se(app, SE_MOVE)
         elif key == "enter":
+            play_se(app, SE_ENTER)       # 先に鳴らす(select() で画面が変わったり、動画が始まったりするため)
             self.menu.select()
         elif key == "esc":
             app.goto(self.back)          # ← 以前は app.goto("home") だった
