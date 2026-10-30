@@ -14,7 +14,10 @@ def draw_mino(cx, cy, shape, rot, offset_x, offset_y, size=CELL_SIZE):
     for bx, by in blocks:
         x = offset_x + (cx + bx) * size
         y = offset_y + (cy + by) * size
+        # 外枠
         polys.append(rect_polyline(x, y, size, size))
+        # 軽い斜線 (左下から右上へ)
+        polys.append(np.array([(x, y), (x + size, y + size)], dtype=np.float64))
     return polys
 
 def render_tetris(logic):
@@ -27,21 +30,16 @@ def render_tetris(logic):
     for y in range(logic.height):
         for x in range(logic.width):
             if logic.board[y][x]:
-                polys.append(rect_polyline(FIELD_X + x * CELL_SIZE, FIELD_Y + y * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                px = FIELD_X + x * CELL_SIZE
+                py = FIELD_Y + y * CELL_SIZE
+                # 外枠
+                polys.append(rect_polyline(px, py, CELL_SIZE, CELL_SIZE))
+                # 軽い斜線 (左下から右上へ)
+                polys.append(np.array([(px, py), (px + CELL_SIZE, py + CELL_SIZE)], dtype=np.float64))
     
+    # 操作中のミノ
     if not logic.game_over and logic.current_shape:
-        # 操作中のミノ
         polys.extend(draw_mino(logic.current_x, logic.current_y, logic.current_shape, logic.current_rot, FIELD_X, FIELD_Y))
-        
-        # 落下予測のゴーストブロック (ポリゴン節約のため少し小さく描画)
-        ghost_y = logic.current_y
-        while not logic._is_collision(logic.current_x, ghost_y - 1, logic.current_rot):
-            ghost_y -= 1
-        g_polys = draw_mino(logic.current_x, ghost_y, logic.current_shape, logic.current_rot, FIELD_X, FIELD_Y, size=CELL_SIZE-2)
-        for p in g_polys:
-            p[:, 0] += 1
-            p[:, 1] += 1
-        polys.extend(g_polys)
 
     # UI: 左上 HOLD
     hx, hy = 15, 210
@@ -62,6 +60,7 @@ def render_tetris(logic):
         y = ny - 25 - i * 35
         polys.extend(draw_mino(0, 0, shape, 0, nx + 10, y, size=8))
 
+    # ゲームオーバーテキスト
     if logic.game_over:
         polys.extend(text_to_polylines("GAME OVER", FIELD_X - 10, FIELD_Y + FIELD_H / 2, 14))
         polys.extend(text_to_polylines("PRESS ESC", FIELD_X, FIELD_Y + FIELD_H / 2 - 20, 10))
