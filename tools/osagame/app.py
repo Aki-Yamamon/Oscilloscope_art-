@@ -32,14 +32,17 @@ BADAPPLE_WAV = SOURCE_DIR / "badapple.wav"
 
 NYANCAT_OSA = SOURCE_DIR / "nyancat.osa"
 NYANCAT_WAV = SOURCE_DIR / "nyancat.wav"
-RINK_OSA = SOURCE_DIR / "enter_the_rink.osa"      # 任意のリンクをosaとwavにして受け取れるように設定を後ほど変える
+RINK_OSA = SOURCE_DIR / "enter_the_rink.osa"
 RINK_WAV = SOURCE_DIR / "enter_the_rink.wav"
 
 
 class NullAudio:
     """音声なし(pygame が無いテスト用)。"""
-    def play(self, path) -> None:
-        print(f"[audio] play {path}")
+    def play(self, path, loops=-1) -> None:
+        print(f"[audio] play {path} (loops={loops})")
+        
+    def play_se(self, path) -> None:
+        print(f"[audio] play_se {path}")
 
     def stop(self) -> None:
         pass
@@ -50,21 +53,36 @@ class PygameAudio:
     def __init__(self, pg):
         self.pg = pg
         self.ok = None
+        self.sounds = {}  # 効果音をキャッシュする辞書
 
     def _init(self) -> bool:
         if self.ok is None:
             try:
                 self.pg.mixer.init()
+                self.pg.mixer.set_num_channels(8) # 同時に複数のSEを鳴らせるようにチャンネルを増やす
                 self.ok = True
             except self.pg.error as e:
                 print("[osagame] 音声を初期化できません:", e)
                 self.ok = False
         return self.ok
 
-    def play(self, path) -> None:
+    def play(self, path, loops=-1) -> None:
+        """BGMの再生(music)"""
         if self._init():
             self.pg.mixer.music.load(str(path))
-            self.pg.mixer.music.play()
+            self.pg.mixer.music.play(loops)
+            
+    def play_se(self, path) -> None:
+        """効果音の再生(Sound)"""
+        if self._init():
+            sp = str(path)
+            if sp not in self.sounds:
+                try:
+                    self.sounds[sp] = self.pg.mixer.Sound(sp)
+                except Exception as e:
+                    print(f"[osagame] SE load error: {e}")
+                    return
+            self.sounds[sp].play()
 
     def stop(self) -> None:
         if self.ok:
@@ -137,13 +155,15 @@ def build_app(n_points: int, home_osa: str | None) -> App:
     app.register("homeview", HomePreviewScreen(home))        # メニューの HOME: home.osa だけを表示
     app.register("outro", OutroScreen(nyan, NYANCAT_WAV))    # BADAPPLE が最後まで再生されたあとの演出
 
-    from osagame.osatetris.tetris_screen import TetrisScreen # TETRIS本体の読み込み
+    from osagame.osatetris.tetris_screen import TetrisScreen
+    from osagame.osapacman.pacman_screen import PacmanScreen # パックマンの読み込み
+    
     app.register("menu", MenuScreen(main_menu, back="home"))     # Esc → ホーム
     app.register("video", MenuScreen(video_menu, back="menu"))   # Esc → 上のメニュー
     app.register("game", MenuScreen(game_menu, back="menu"))
     app.register("textbox", TextBoxDemoScreen())                 # メニューからは外したが、画面は残してある
-    app.register("tetris", TetrisScreen(back="game"))            # プレースホルダーから実画面に差し替え
-    app.register("pacman", MessageScreen("PAC MAN IS COMING SOON.", back="game"))
+    app.register("tetris", TetrisScreen(back="game"))
+    app.register("pacman", PacmanScreen(back="game"))            # プレースホルダーから実画面に差し替え
     app.register("expline", MessageScreen("EXPLINE IS COMING SOON."))
     app.goto("home")
     return app
@@ -234,11 +254,12 @@ def main(argv=None) -> None:
     ap.add_argument("--home", nargs="?", const=str(HOME_OSA), default=str(HOME_OSA),
                     help=f"ホーム画面の .osa(省略・値なしで {HOME_OSA})")
     ap.add_argument("--no-serial", action="store_true", help="ESP32 に送らず、PC 画面だけ動かす")
+    ap.add_argument("--no-preview", action="store_true", help="PC画面へのプレビュー描画をオフにする(本番の負荷軽減用)") # ← ★これを追加
     ap.add_argument("--reset-wait", type=float, default=2.0)
     args = ap.parse_args(argv)
     if not args.no_serial and not args.port:
         ap.error("--port を指定してください(ESP32 なしなら --no-serial)")
-    if not Path(args.home).is_file():                       # 無ければ、表示して停止
+    if not Path(args.home).is_file():
         sys.exit(f"[ERROR] ホーム用のファイルがありません: {args.home}")
 
     import pygame as pg
@@ -250,10 +271,12 @@ def main(argv=None) -> None:
     ser, stop = (None, None) if args.no_serial else _open_serial(args)
 
     pg.init()
-    surface = pg.display.set_mode((512, 512))
-    pg.display.set_caption("osagame  (Up/Down, Enter, Esc)")
+    # プレビューなしの場合はウィンドウを小さくして邪魔にならないようにする
+    win_size = (150, 150) if args.no_preview else (512, 512)
+    surface = pg.display.set_mode(win_size)
+    pg.display.set_caption("osagame" if args.no_preview else "osagame  (Up/Down, Enter, Esc)")
     pg.key.start_text_input()
-    pg.key.set_repeat(350, 90)               # 押しっぱなしで、カーソルが連続して動く
+    pg.key.set_repeat(350, 90)
     clock = pg.time.Clock()
     seq = 0
     try:
@@ -266,26 +289,26 @@ def main(argv=None) -> None:
                 if k:
                     app.current.handle(app, *k)
 
-            if app.launch is not None:                      # 動画が選ばれた
+            if app.launch is not None:
                 osa, wav, after = app.launch
                 app.launch = None
                 if ser is None:
                     print("[osagame] --no-serial のときは再生できません")
                 else:
-                    _close_serial(ser, stop)                # COM ポートを、プレーヤーに明け渡す
+                    _close_serial(ser, stop)
                     ser = None
 
                     result = _run_player(pg, args, osa, wav)
                     if result == "quit":
                         app.running = False
                     else:
-                        ser, stop = _open_serial(args)      # 終わったら、ポートを開き直す
+                        ser, stop = _open_serial(args)
                         seq = 0
                         pg.event.clear()
                         if result == "end" and after:
-                            app.goto(after)                 # 最後まで再生した → 動画ごとに決めた画面へ(止めたときは今の画面のまま)
+                            app.goto(after)
 
-                clock.tick()                                # 待っていた時間が dt に入らないようにする
+                clock.tick()
                 continue
 
             dt = clock.tick(args.fps) / 1000.0
@@ -293,7 +316,13 @@ def main(argv=None) -> None:
             if ser is not None:
                 ser.write(build_packet(TYPE_FRAME_XY, seq, xy.tobytes()))
                 seq += 1
-            _draw_preview(pg, surface, xy)
+                
+            # ★ プレビュー描画の条件分岐
+            if not args.no_preview:
+                _draw_preview(pg, surface, xy)
+            else:
+                surface.fill((0, 0, 0)) # プレビューを描画せず真っ暗にするだけ
+                
             pg.display.flip()
     except KeyboardInterrupt:
         pass
@@ -302,7 +331,6 @@ def main(argv=None) -> None:
         if ser is not None:
             _close_serial(ser, stop)
         pg.quit()
-
 
 if __name__ == "__main__":
     main()
