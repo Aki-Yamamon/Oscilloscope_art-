@@ -32,6 +32,7 @@ class TetrisScreen(Screen):
             print(f"[warning] Audio file not found: {self.wav_bgm}")
 
     def handle(self, app, key, ch=None):
+
         if key == "esc":
             app.audio.stop()
             app.goto(self.back) # メニューに戻る
@@ -39,7 +40,10 @@ class TetrisScreen(Screen):
             
         if self.logic.game_over:
             if key == "enter":
-                self.on_enter(app) # リトライ
+                app.audio.stop()
+                # リトライではなく、名前入力画面へスコアを渡して遷移
+                app.screens["name_entry"].setup("tetris", self.logic.score)
+                app.goto("name_entry")
             return
 
         if key == "left":

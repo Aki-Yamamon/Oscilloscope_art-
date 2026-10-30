@@ -191,6 +191,7 @@ __pycache__/
 *.mp3
 *.wav
 *.gif
+*.csv
 
 # 変換で作ったデータ
 *.osa

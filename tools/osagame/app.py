@@ -131,9 +131,21 @@ def build_app(n_points: int, home_osa: str | None) -> App:
         ("ENTER THE RINK", lambda: app.play_video(RINK_OSA, RINK_WAV, after="video")),
         ("BACK",           lambda: app.goto("menu")),
     ], title="VIDEO")
+    
+    def open_lb(game_name):
+        app.screens["leaderboard"].setup(game_name)
+        app.goto("leaderboard")
+
+    lb_menu = Menu([
+        ("PAC MAN", lambda: open_lb("pacman")),
+        ("TETRIS",  lambda: open_lb("tetris")),
+        ("BACK",    lambda: app.goto("game")),
+    ], title="LEADERBOARD")
+
     game_menu = Menu([
         ("TETRIS",         lambda: app.goto("tetris")),
         ("PAC MAN",        lambda: app.goto("pacman")),
+        ("LEADERBOARD",    lambda: app.goto("leaderboard_menu")),
         ("BACK",           lambda: app.goto("menu")),
     ], title="GAME")
 
@@ -156,14 +168,18 @@ def build_app(n_points: int, home_osa: str | None) -> App:
     app.register("outro", OutroScreen(nyan, NYANCAT_WAV))    # BADAPPLE が最後まで再生されたあとの演出
 
     from osagame.osatetris.tetris_screen import TetrisScreen
-    from osagame.osapacman.pacman_screen import PacmanScreen # パックマンの読み込み
+    from osagame.osapacman.pacman_screen import PacmanScreen
+    from osagame.history import NameEntryScreen, LeaderboardScreen # 追加
     
-    app.register("menu", MenuScreen(main_menu, back="home"))     # Esc → ホーム
-    app.register("video", MenuScreen(video_menu, back="menu"))   # Esc → 上のメニュー
+    app.register("menu", MenuScreen(main_menu, back="home"))
+    app.register("video", MenuScreen(video_menu, back="menu"))
     app.register("game", MenuScreen(game_menu, back="menu"))
-    app.register("textbox", TextBoxDemoScreen())                 # メニューからは外したが、画面は残してある
+    app.register("leaderboard_menu", MenuScreen(lb_menu, back="game")) # 追加
+    app.register("name_entry", NameEntryScreen(back="game"))           # 追加
+    app.register("leaderboard", LeaderboardScreen(back="leaderboard_menu")) # 追加
+    app.register("textbox", TextBoxDemoScreen())
     app.register("tetris", TetrisScreen(back="game"))
-    app.register("pacman", PacmanScreen(back="game"))            # プレースホルダーから実画面に差し替え
+    app.register("pacman", PacmanScreen(back="game"))
     app.register("expline", MessageScreen("EXPLINE IS COMING SOON."))
     app.goto("home")
     return app
