@@ -17,7 +17,7 @@ import threading
 import numpy as np
 
 from osaconv.path import DAC_CENTER, DAC_MAX, polylines_to_path
-from osagame.screens import HomeScreen, MenuScreen, MessageScreen, TextBoxDemoScreen
+from osagame.screens import HomeScreen, MenuScreen, MessageScreen, OutroScreen, TextBoxDemoScreen
 from osagame.ui import Menu
 
 import subprocess
@@ -31,11 +31,49 @@ BADAPPLE_OSA = SOURCE_DIR / "badapple.osa"
 BADAPPLE_WAV = SOURCE_DIR / "badapple.wav"
 
 
+NYANCAT_WAV = SOURCE_DIR / "nyancat.wav"
+
+
+class NullAudio:
+    """音声なし(pygame が無いテスト用)。"""
+    def play(self, path) -> None:
+        print(f"[audio] play {path}")
+
+    def stop(self) -> None:
+        pass
+
+
+class PygameAudio:
+    """pygame.mixer での再生。最初に鳴らすときに初期化する(BADAPPLE 再生中は、音声デバイスに触れない)。"""
+    def __init__(self, pg):
+        self.pg = pg
+        self.ok = None
+
+    def _init(self) -> bool:
+        if self.ok is None:
+            try:
+                self.pg.mixer.init()
+                self.ok = True
+            except self.pg.error as e:
+                print("[osagame] 音声を初期化できません:", e)
+                self.ok = False
+        return self.ok
+
+    def play(self, path) -> None:
+        if self._init():
+            self.pg.mixer.music.load(str(path))
+            self.pg.mixer.music.play()
+
+    def stop(self) -> None:
+        if self.ok:
+            self.pg.mixer.music.stop()
+
 class App:
     def __init__(self, n_points: int):
         self.n = n_points
         self.running = True
         self.launch = None           # 外部プレーヤーの起動依頼: (osa, wav)。main() のループが拾って実行する
+        self.audio = NullAudio()     # main() が PygameAudio に差し替える
         self.screens: dict = {}
         self.current = None
 
@@ -72,7 +110,10 @@ def build_app(n_points: int, home_osa: str | None) -> App:
         ("PLAY BADAPPLE",  app.play_badapple),
         ("QUIT",           lambda: setattr(app, "running", False)),
     ])
-    app.register("home", HomeScreen(home_osa, n_points))
+    home = HomeScreen(home_osa, n_points)
+    app.register("home", home)
+    app.register("outro", OutroScreen(home, NYANCAT_WAV))   # BADAPPLE が最後まで再生されたあとの演出
+
     app.register("menu", MenuScreen(menu))
     app.register("textbox", TextBoxDemoScreen())
     app.register("tetris", MessageScreen("TETRIS IS COMING SOON."))   # 後でテトリス本体に差し替える
@@ -94,24 +135,27 @@ def _close_serial(ser, stop) -> None:
     ser.close()
 
 
-def _run_player(pg, args, osa: Path, wav: Path) -> bool:
+def _run_player(pg, args, osa: Path, wav: Path) -> str:
     """python -m osaconv.play を子プロセスで動かし、終わるまで待つ。Esc で中止。
-    ウィンドウを閉じられたら False を返す(アプリも終了する)。"""
+    戻り値: "end"(最後まで再生した) / "stopped"(Esc などで止めた) / "quit"(ウィンドウが閉じられた)。
+    "end" は、プレーヤーが終了コード 0 で終わったときだけ。"""
     cmd = [sys.executable, "-m", "osaconv.play", str(osa), "--audio", str(wav),
            "--port", args.port, "--baud", str(args.baud)]
     print("[osagame] run:", " ".join(cmd))
-    keep_running = True
+    result = None
     proc = subprocess.Popen(cmd, cwd=str(TOOLS_DIR))
     try:
         while proc.poll() is None:
             for ev in pg.event.get():
                 if ev.type == pg.QUIT:
-                    keep_running = False
+                    result = "quit"
                     proc.terminate()
                 elif ev.type == pg.KEYDOWN and ev.key == pg.K_ESCAPE:
+                    result = result or "stopped"
                     proc.terminate()
             pg.time.wait(50)
     except KeyboardInterrupt:
+        result = result or "stopped"
         proc.terminate()
     try:
         proc.wait(timeout=5)
@@ -119,7 +163,7 @@ def _run_player(pg, args, osa: Path, wav: Path) -> bool:
         proc.kill()
         proc.wait()
     print(f"[osagame] player finished (exit code {proc.returncode})")
-    return keep_running
+    return result or ("end" if proc.returncode == 0 else "stopped")
 
 
 # ------------------------------------------------------------------ pygame 側
@@ -170,7 +214,7 @@ def main(argv=None) -> None:
 
     scale = (args.scale_x or args.scale, args.scale_y or args.scale)
     app = build_app(args.points, args.home)
-
+    app.audio = PygameAudio(pg)
     ser, stop = (None, None) if args.no_serial else _open_serial(args)
 
     pg.init()
@@ -198,12 +242,17 @@ def main(argv=None) -> None:
                 else:
                     _close_serial(ser, stop)                # COM ポートを、プレーヤーに明け渡す
                     ser = None
-                    if _run_player(pg, args, osa, wav):
-                        ser, stop = _open_serial(args)      # 終わったら開き直して、メニューに戻る
+                    
+                    result = _run_player(pg, args, osa, wav)
+                    if result == "quit":
+                        app.running = False
+                    else:
+                        ser, stop = _open_serial(args)      # 終わったら、ポートを開き直す
                         seq = 0
                         pg.event.clear()
-                    else:
-                        app.running = False
+                        if result == "end":
+                            app.goto("outro")               # 最後まで再生した → 演出へ(止めたときはメニューのまま)
+ 
                 clock.tick()                                # 待っていた時間が dt に入らないようにする
                 continue
 
@@ -217,6 +266,7 @@ def main(argv=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        app.audio.stop()
         if ser is not None:
             _close_serial(ser, stop)
         pg.quit()

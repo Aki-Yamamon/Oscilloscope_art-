@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import numpy as np
+import wave
+from pathlib import Path
 
 from osagame.ui import Menu, TextBox, center_x, text_to_polylines
 from osaconv.pack import read_osa
@@ -156,3 +158,81 @@ class TextBoxDemoScreen(Screen):
         if self.step == 1:
             polys += self.inp.polylines()
         return polys
+
+# ------------------------------------------------------------------ BADAPPLE のあとの演出
+
+def _wav_seconds(path, default: float = 15.0) -> float:
+    """wav の長さ(秒)。読めなければ default。"""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getnframes() / w.getframerate()
+    except Exception:
+        return default
+
+
+def _centered_lines(lines, size: float, gap: float = 14.0) -> list:
+    """複数行の文字を、画面の中央にそろえて並べた折れ線にする。"""
+    total = len(lines) * size + (len(lines) - 1) * gap
+    top = 127.5 + total / 2
+    polys: list = []
+    for i, line in enumerate(lines):
+        polys += text_to_polylines(line, center_x(line, size), top - size - i * (size + gap), size)
+    return polys
+
+
+class OutroScreen(Screen):
+    """BADAPPLE を最後まで再生したあとの一連の動作。
+
+        phase 0: THANK YOU / WATCHING を表示
+        phase 1: NOW ENJOY / THE NYANCAT を表示 + 同時に nyancat.wav を開始
+        phase 2: home.osa を再生(音楽が終わるまで)
+        音楽が終わったら end_screen("home")へ。Esc で、音楽を止めてメニューへ。
+    """
+    THANKS_LINES = ("THANK YOU", "WATCHING")
+    NYAN_LINES = ("NOW ENJOY", "THE NYANCAT..")
+    THANKS_SEC = 3.0        # phase 0 の長さ
+    ENTER_AFTER_SEC = 5.0   # NOW ENJOY の表示から、この秒数がたつと Enter でメニューへ行ける
+    NYAN_TEXT_SEC = 3.0     # phase 1 の長さ(音楽はこの先頭から鳴り続ける)
+
+    def __init__(self, home: HomeScreen, wav_path, end_screen: str = "home"):
+        self.home, self.wav, self.end_screen = home, Path(wav_path), end_screen
+        self.music_sec = _wav_seconds(self.wav)        # 15 秒ほど。wav の長さから自動で測る
+        self.t = 0.0
+        self.music_t = 0.0
+        self.phase = 0
+
+    def on_enter(self, app) -> None:
+        self.t, self.music_t, self.phase = 0.0, 0.0, 0
+
+    def handle(self, app, key, ch=None) -> None:
+        if key == "esc":
+            app.audio.stop()
+            app.goto("menu")
+        elif key == "enter" and self.phase >= 1 and self.music_t >= self.ENTER_AFTER_SEC:
+            app.audio.stop()                           # NOW ENJOY の表示から 5 秒たったら、Enter でメニューへ
+            app.goto("menu")
+
+    def frame(self, app, dt: float) -> np.ndarray:
+        self.t += dt
+        if self.phase == 0 and self.t >= self.THANKS_SEC:
+            self.phase, self.t = 1, 0.0
+            if self.wav.is_file():
+                app.audio.play(self.wav)               # 文字の表示と同時に、音楽を開始
+            else:
+                print(f"[ERROR] ファイルがありません: {self.wav}")
+        elif self.phase == 1 and self.t >= self.NYAN_TEXT_SEC:
+            self.phase = 2
+            self.home.on_enter(app)                    # home.osa を頭から
+
+        if self.phase >= 1:
+            self.music_t += dt
+            if self.music_t >= self.music_sec:         # 音楽が終わった
+                app.audio.stop()
+                app.goto(self.end_screen)
+                return app.current.frame(app, 0.0)
+
+        if self.phase == 0:
+            return app.render(_centered_lines(self.THANKS_LINES, 22))
+        if self.phase == 1:
+            return app.render(_centered_lines(self.NYAN_LINES, 20))
+        return self.home.frame(app, dt)

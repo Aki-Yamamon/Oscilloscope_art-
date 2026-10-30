@@ -6,7 +6,7 @@
 
 パケットの形式（リトルエンディアン）:
     A5 5A          同期バイト（パケットの先頭の目印）
-    type  (1)      0x01 = XY のフレーム（0x02 は将来 XYZ 用に予約）
+    type  (1)      0x01 = XY のフレーム / 0x10 = 制御（本体 1 バイト: 0x01 = 終了）/ 0x02 は将来 XYZ 用に予約
     seq   (4)      パケットの通し番号（送るたびに +1。欠落の検出に使う）
     len   (2)      本体のバイト数
     本体  (len)    x0,y0,x1,y1,...（各 u8）
@@ -30,6 +30,8 @@ from osaconv.pack import read_osa
 
 SYNC = b"\xA5\x5A"
 TYPE_FRAME_XY = 0x01
+TYPE_CONTROL = 0x10      # 制御用のパケット。本体の 1 バイト目が、命令の番号
+CTRL_END = 0x01          # 再生が終わった（ESP32 は、すぐに待機パターンに切り替える）
 
 
 def crc16(data: bytes, init: int = 0xFFFF) -> int:
@@ -43,6 +45,11 @@ def build_packet(ptype: int, seq: int, payload: bytes) -> bytes:
         raise ValueError("本体が大きすぎます")
     body = struct.pack("<BIH", ptype, seq & 0xFFFFFFFF, len(payload)) + payload
     return SYNC + body + struct.pack("<H", crc16(body))
+
+
+def build_control(seq: int, code: int) -> bytes:
+    """制御パケットを作る（例: CTRL_END）。"""
+    return build_packet(TYPE_CONTROL, seq, bytes([code]))
 
 
 @dataclass
@@ -109,6 +116,10 @@ def stream_osa(ser, osa_path, loop: bool = False, start_frame: int = 0,
         if on_second is not None and time.perf_counter() - last_report >= 1.0:
             last_report = time.perf_counter()
             on_second(st, i, total)
+
+    if benchmark_sec is None and not loop:
+        _sleep_until(t0 + total / fps)                 # 最後のフレームを、表示し終えるまで待ってから
+        ser.write(build_control(seq, CTRL_END))        # 「終わり」を ESP32 に知らせる
     return st
 
 
@@ -128,6 +139,7 @@ def _reader(ser, stop: threading.Event) -> None:
             text = line.decode("utf-8", errors="replace").strip()
             if text:
                 print("  ESP32>", text)
+                sys.exit(0 if text == "end" else 1)
 
 
 def open_port(port: str, baud: int, reset_wait: float):
