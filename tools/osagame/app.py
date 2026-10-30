@@ -127,7 +127,7 @@ def build_app(n_points: int, home_osa: str | None) -> App:
 
     # ---- メニュー(上の階層から順に)
     video_menu = Menu([
-        ("BADAPPLE",       lambda: app.play_video(BADAPPLE_OSA, BADAPPLE_WAV, after="outro")),
+        ("BAD APPLE!!",       lambda: app.play_video(BADAPPLE_OSA, BADAPPLE_WAV, after="outro")),
         ("ENTER THE RINK", lambda: app.goto("addvideo")),          # YouTube の ID を入力して再生
         ("HISTORY",        lambda: app.goto("addvideo_history")),  # 再生した動画の一覧
         ("BACK",           lambda: app.goto("menu")),
