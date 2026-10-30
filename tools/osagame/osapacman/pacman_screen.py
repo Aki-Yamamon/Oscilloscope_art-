@@ -49,9 +49,11 @@ class PacmanScreen(Screen):
             
         if self.state == "gameover":
             if key == "enter":
-                self.on_enter(app)
+                # リトライではなく、名前入力画面へスコアとステージ数を渡して遷移
+                app.screens["name_entry"].setup("pacman", self.logic.score, str(self.logic.stage))
+                app.goto("name_entry")
             return
-
+        
         if self.state == "play":
             if key == "up":
                 self.logic.pacman.next_dir = 'up'
