@@ -1,6 +1,61 @@
-## v0.3.0 の再生手順
+## v1.0.0の説明
 
-### 1. 動画を .osa に変換 および音楽の同時再生
+### 前提
+sourceディレクトリに
+- home.osa
+- badapple.osa
+- badapple.wav
+を置いてください。
+
+### 1. GUIの起動
+```powershell
+cd tools
+
+python -m osagame --port COM6 --baud 921600
+```
+enterでhome.osaからmenuへ移動できます。
+カーソル`>`は上下キーで移動　エンターで実行です。
+QUITを選択すると終了します。
+
+#### GUIの改造について
+
+構成
+
+| ファイル | 担当 | 役割 |
+| :--- | :--- | :--- |
+| `osagame/app.py` | ロジック(全体) | 起動、キー入力の受け取り、毎フレームの送信。メニュー項目の定義もここ( `build_app` ) |
+| `osagame/screens.py` | ロジック(画面) | 画面ごとの「キーが押されたらどうなるか」。画面遷移はここ |
+| `osagame/ui.py` | 表示＋小さな状態 | 文字、メニュー、テキストボックスの形を作る。カーソル位置や文字送りの進み具合も持つ |
+| `osagame/font.py` | 表示(データ) | 文字の形(線の座標)だけ |
+| `osaconv/path.py` | 表示(変換) | 線の集まりを、ジャンプを暗くしたN点に変換する |
+| `osaconv/stream.py` | 通信 | パケットを作ってシリアルで送る |
+| `osaconv/pack.py` | ファイル | ホームの .osa を読む |
+
+動作フロー
+```
+キー入力 ─ app.py ─→ screens.py の handle()      ← 状態を変える(ロジック)
+                          │
+毎フレーム:               ↓
+screens.py の frame() ─→ ui.py / font.py          ← 線(折れ線)を作る(表示)
+        │
+        ↓ app.render()
+osaconv/path.py                                    ← 線 → N点(uint8)
+        │
+        ↓
+osaconv/stream.py ─→ シリアル ─→ ESP32 ─→ オシロ
+```
+`screens.py` は `pygame` を知りません。`app.py` がキーを "up" "enter" などの文字列に変換して渡します。そのおかげで、画面のロジックはPCだけで試せます。
+
+**よくある改造と触る場所**
+
+メニュー項目の追加・変更: app.py の build_app() の Menu([...]) に1行足します。("名前", lambda: app.goto("画面名")) の形です。
+新しい画面: screens.py に Screen を継承したクラスを作り、build_app() で app.register("名前", ...) します。handle() がキー処理、polylines() が表示です。テトリスもこの形で入れます。
+文字の形・文字の追加: font.py の GLYPHS に1行足します。
+点滅・揺れなどの動き: ui.py の Menu.polylines() や TextBox.polylines() です。
+ホーム動画の差し替え: .osa を変えて --home で指定するだけです。
+
+
+### 2. 動画を .osa に変換 および音楽の同時再生
 
 `tools/` で、venv を有効にして実行します。`badapple.mp4` は `tools/` に置きます（Git には入れません）。
 
@@ -29,7 +84,7 @@ python -m osaconv.play <生成ファイル名>.osa --audio <生成ファイル�
 
 変換結果は `python scripts/view_osa.py <ファイル名>.osa --count 12` で、PC 上で確認できます。
 
-### 2. ESP32 に書き込む
+### 3. ESP32 に書き込む
 
 1. Arduino IDE で `firmware/osa_stream.ino` を開く
 2. ボード: `ESP32 Dev Module`
@@ -37,7 +92,7 @@ python -m osaconv.play <生成ファイル名>.osa --audio <生成ファイル�
 4. **シリアルモニタは閉じること**
 5. - オシロには、**動く円**が出るはずです
 
-### 3. 配線
+### 4. 配線
 
 | ESP32 | オシロスコープ |
 |---|---|
@@ -47,7 +102,7 @@ python -m osaconv.play <生成ファイル名>.osa --audio <生成ファイル�
 
 オシロは XY モード、両チャンネルを DC カップリングにします。
 
-### 4. 動画と音声のずれの調整
+### 5. 動画と音声のずれの調整
 
 ```powershell
 cd tools
@@ -59,7 +114,7 @@ python -m osaconv.play sync_test.osa --audio sync_test.wav --port COM6 --loop
 - 全長は、full.osa と、ffmpeg -i badapple.mp4 ...（-ss と -t なし）で作った audio_full.wav を使います。
 
 
-### 5. 通信に余裕があるかを測る
+### 6. 通信に余裕があるかを測る
 
 ```powershell
 python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --benchmark 10
