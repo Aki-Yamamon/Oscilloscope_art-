@@ -1,6 +1,6 @@
-## v0.2.0 の再生手順（映像をシリアル通信で転送・理論上無制限）
+## v0.3.0 の再生手順
 
-### 1. 動画を .osa に変換する
+### 1. 動画を .osa に変換 および音楽の同時再生
 
 `tools/` で、venv を有効にして実行します。`badapple.mp4` は `tools/` に置きます（Git には入れません）。
 
@@ -10,9 +10,14 @@ cd tools
 
 python -m osaconv <ファイル名>.mp4 -o <生成ファイル名>.osa --start <開始秒> --seconds <終了秒> --invert --epsilon 1.5 --min-length 40 --points 1000
 
-python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --loop
-```
+python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --loop // 映像のみ再生
 
+ffmpeg -ss <開始秒> -t <終了秒> -i <ファイル名>.mp4 -vn -ac 2 -ar 44100 -c:a pcm_s16le <生成ファイル名>.wav
+
+python -m osaconv.play <生成ファイル名>.osa --audio <生成ファイル名>.wav --port <ポート番号> --baud 921600 // 同時再生
+
+```
+#### osaファイル生成コマンドオプション
 | オプション | 意味 |
 |---|---|
 | `--start 33` | 変換を始める位置（秒） |
@@ -22,7 +27,7 @@ python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --
 | `--min-length 40` | これより短い輪郭は捨てる |
 | `--points 1000` | 1 フレームの点数 N |
 
-変換結果は `python scripts/view_osa.py main.osa --count 12` で、PC 上で確認できます。
+変換結果は `python scripts/view_osa.py <ファイル名>.osa --count 12` で、PC 上で確認できます。
 
 ### 2. ESP32 に書き込む
 
@@ -42,7 +47,19 @@ python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --
 
 オシロは XY モード、両チャンネルを DC カップリングにします。
 
-### 4. 通信に余裕があるかを測る
+### 4. 動画と音声のずれの調整
+
+```powershell
+cd tools
+python scripts/make_sync_test.py
+python -m osaconv.play sync_test.osa --audio sync_test.wav --port COM6 --loop
+```
+- 実行中に +10 や -10 と入力して Enter を押すと、映像のタイミングを 10ms ずつ動かせます（+ で映像が先に出る）。合ったら、終了時に表示される値を --offset-ms に渡します。
+- 音声には、有線のスピーカーかヘッドホンを使ってください。Bluetooth は遅延が大きく、合わせにくいです。
+- 全長は、full.osa と、ffmpeg -i badapple.mp4 ...（-ss と -t なし）で作った audio_full.wav を使います。
+
+
+### 5. 通信に余裕があるかを測る
 
 ```powershell
 python -m osaconv.stream <生成ファイル名>.osa --port <ポート番号> --baud 921600 --benchmark 10
