@@ -190,6 +190,7 @@ __pycache__/
 *.webm
 *.mp3
 *.wav
+*.gif
 
 # 変換で作ったデータ
 *.osa
