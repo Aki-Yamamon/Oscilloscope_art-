@@ -26,6 +26,7 @@ def convert_video(
     seconds: float | None = None,
     params: ContourParams | None = None,
     progress: bool = True,
+    on_progress=None,            # 呼び出し: on_progress(処理した秒数)。約 0.5 秒ごと
 ) -> dict:
     """動画を .osa に変換する。統計（辞書）を返す。"""
     if not Path(video_path).exists():
@@ -71,7 +72,11 @@ def convert_video(
             i += 1
             if progress and i % 30 == 0:
                 print(f"  {i} frames ({i / fps:.1f} s)")
+            if on_progress is not None and i % 15 == 0:
+                on_progress(i / fps)
     cap.release()
+    if on_progress is not None:
+        on_progress(i / fps)
 
     return {
         "frames": i,

@@ -128,7 +128,8 @@ def build_app(n_points: int, home_osa: str | None) -> App:
     # ---- メニュー(上の階層から順に)
     video_menu = Menu([
         ("BADAPPLE",       lambda: app.play_video(BADAPPLE_OSA, BADAPPLE_WAV, after="outro")),
-        ("ENTER THE RINK", lambda: app.play_video(RINK_OSA, RINK_WAV, after="video")),
+        ("ENTER THE RINK", lambda: app.goto("addvideo")),          # YouTube の ID を入力して再生
+        ("HISTORY",        lambda: app.goto("addvideo_history")),  # 再生した動画の一覧
         ("BACK",           lambda: app.goto("menu")),
     ], title="VIDEO")
     
@@ -177,6 +178,9 @@ def build_app(n_points: int, home_osa: str | None) -> App:
     app.register("leaderboard_menu", MenuScreen(lb_menu, back="game")) # 追加
     app.register("name_entry", NameEntryScreen(back="game"))           # 追加
     app.register("leaderboard", LeaderboardScreen(back="leaderboard_menu")) # 追加
+    from osagame.addvideo import EnterLinkScreen, VideoHistoryScreen
+    app.register("addvideo", EnterLinkScreen(n_points))
+    app.register("addvideo_history", VideoHistoryScreen())
     app.register("textbox", TextBoxDemoScreen())
     app.register("tetris", TetrisScreen(back="game"))
     app.register("pacman", PacmanScreen(back="game"))
