@@ -31,6 +31,8 @@ constexpr uint32_t POINT_DELAY_US = 0;      // 1 点ごとの待ち（マイク�
 
 constexpr uint8_t SYNC0 = 0xA5, SYNC1 = 0x5A;
 constexpr uint8_t TYPE_FRAME_XY = 0x01;
+constexpr uint8_t TYPE_CONTROL = 0x10;    // 制御用。本体の 1 バイト目が命令の番号
+constexpr uint8_t CTRL_END = 0x01;        // PC から「再生が終わった」
 
 // receivePacket() の戻り値
 //   ※ enum を戻り値の型にすると、Arduino IDE が自動で作る関数の宣言より後に型が現れて、
@@ -54,6 +56,7 @@ static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 struct Stats { uint32_t ok, crc, badLen, timeouts, lost, skipped; };
 static Stats g_st = {};
 static volatile uint32_t g_passes = 0;
+static volatile uint32_t g_endCount = 0;     // 「終わり」を受け取った回数
 
 static uint16_t rd16(const uint8_t* p) { return p[0] | (p[1] << 8); }
 static uint32_t rd32(const uint8_t* p) {
@@ -67,6 +70,17 @@ static uint16_t crcUpdate(uint16_t crc, const uint8_t* d, size_t n) {
     for (int b = 0; b < 8; b++) crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
   }
   return crc;
+}
+
+// 「再生が終わった」と PC から知らされたときの処理。
+// すぐに待機パターンに切り替える。終わったときに何かしたいこと（LED を点ける、別のピンを切り替える、
+// 待機アニメーションを始める、など）は、ここに書く。
+static void onEnd() {
+  portENTER_CRITICAL(&g_mux);
+  g_hasFrame = false;                          // 最新のフレームを捨てる → loop() が待機パターンを描く
+  portEXIT_CRITICAL(&g_mux);
+  g_endCount++;
+  Serial.println("end");                 // PC の画面にも表示される
 }
 
 static int pickFreeSlot() {
@@ -117,13 +131,18 @@ static int receivePacket() {
   uint16_t crc = crcUpdate(0xFFFF, hdr, 7);
   crc = crcUpdate(crc, g_buf[slot], len);
   if (crc != rd16(cb)) { g_st.crc++; return RX_BAD; }
-  if (type != TYPE_FRAME_XY) return RX_BAD;      // 将来の形式（XYZ など）は、今は読み捨てる
 
   static bool haveSeq = false;
   static uint32_t lastSeq = 0;
   if (haveSeq && seq > lastSeq + 1) g_st.lost += seq - lastSeq - 1;   // 通し番号の飛び = 欠落
   haveSeq = true;
   lastSeq = seq;
+
+  if (type == TYPE_CONTROL) {                    // 制御パケット（本体の 1 バイト目が命令）
+    if (len >= 1 && g_buf[slot][0] == CTRL_END) onEnd();
+    return RX_OK;
+  }
+  if (type != TYPE_FRAME_XY) return RX_BAD;      // 将来の形式（XYZ など）は、今は読み捨てる
 
   g_count[slot] = len / 2;
   portENTER_CRITICAL(&g_mux);
@@ -138,10 +157,10 @@ static int receivePacket() {
 static void printStats() {
   static uint32_t lastOk = 0, lastPasses = 0;
   const uint32_t passes = g_passes;
-  Serial.printf("STAT ok=%lu (+%lu/s) crc=%lu len=%lu tmo=%lu lost=%lu skip=%lu passes/s=%lu\n",
+  Serial.printf("STAT ok=%lu (+%lu/s) crc=%lu len=%lu tmo=%lu lost=%lu skip=%lu passes/s=%lu end=%lu\n",
                 (unsigned long)g_st.ok, (unsigned long)(g_st.ok - lastOk), (unsigned long)g_st.crc,
                 (unsigned long)g_st.badLen, (unsigned long)g_st.timeouts, (unsigned long)g_st.lost,
-                (unsigned long)g_st.skipped, (unsigned long)(passes - lastPasses));
+                (unsigned long)g_st.skipped, (unsigned long)(passes - lastPasses), (unsigned long)g_endCount);
   lastOk = g_st.ok;
   lastPasses = passes;
 }

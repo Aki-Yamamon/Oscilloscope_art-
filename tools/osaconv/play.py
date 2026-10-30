@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from osaconv.pack import read_osa
-from osaconv.stream import TYPE_FRAME_XY, _reader, build_packet, open_port
+from osaconv.stream import CTRL_END, TYPE_FRAME_XY, _reader, build_control, build_packet, open_port
 
 
 class AudioClock:
@@ -129,6 +129,9 @@ def run_sender(ser, xy: np.ndarray, fps: int, clock, *, duration_s: float, loop:
         if on_second is not None and time.perf_counter() - last_report >= 1.0:
             last_report = time.perf_counter()
             on_second(st, pos, target % total, get_offset_s())
+
+    if not loop and not stop.is_set():
+        ser.write(build_control(seq, CTRL_END))        # 映像が終わった: ESP32 を、すぐ待機パターンへ
     return st
 
 
