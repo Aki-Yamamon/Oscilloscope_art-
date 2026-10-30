@@ -17,7 +17,7 @@ import threading
 import numpy as np
 
 from osaconv.path import DAC_CENTER, DAC_MAX, polylines_to_path
-from osagame.screens import HomeScreen, MenuScreen, MessageScreen, OutroScreen, TextBoxDemoScreen
+from osagame.screens import (HomePreviewScreen, HomeScreen, MenuScreen, MessageScreen, OutroScreen, TextBoxDemoScreen)
 from osagame.ui import Menu
 
 import subprocess
@@ -30,8 +30,10 @@ HOME_OSA = SOURCE_DIR / "home.osa"
 BADAPPLE_OSA = SOURCE_DIR / "badapple.osa"
 BADAPPLE_WAV = SOURCE_DIR / "badapple.wav"
 
-
+NYANCAT_OSA = SOURCE_DIR / "nyancat.osa"
 NYANCAT_WAV = SOURCE_DIR / "nyancat.wav"
+RINK_OSA = SOURCE_DIR / "enter_the_rink.osa"      # 任意のリンクをosaとwavにして受け取れるように設定を後ほど変える
+RINK_WAV = SOURCE_DIR / "enter_the_rink.wav"
 
 
 class NullAudio:
@@ -84,14 +86,15 @@ class App:
         self.current = self.screens[name]
         self.current.on_enter(self)
 
-    def play_badapple(self) -> None:
-        """メニューの "PLAY BADAPPLE"。ファイルを確かめて、起動を依頼する(実行は main() のループ)。"""
-        missing = [p for p in (BADAPPLE_OSA, BADAPPLE_WAV) if not p.is_file()]
+    def play_video(self, osa: Path, wav: Path, after: str | None = None) -> None:
+        """動画の再生を依頼する。ファイルを確かめて、main() のループに渡す(実行は main() のループ)。
+        after: 最後まで再生したあとに移る画面の名前。None なら、今の画面のまま。"""
+        missing = [p for p in (osa, wav) if not p.is_file()]
         if missing:
             for p in missing:
                 print(f"[ERROR] ファイルがありません: {p}")
             return                   # メニューに留まる
-        self.launch = (BADAPPLE_OSA, BADAPPLE_WAV)
+        self.launch = (osa, wav, after)
 
     def render(self, polys: list) -> np.ndarray:
         """折れ線のリスト → (N, 2) uint8。何も無ければ中央に 1 点。"""
@@ -103,20 +106,44 @@ class App:
 
 def build_app(n_points: int, home_osa: str | None) -> App:
     app = App(n_points)
-    menu = Menu([
-        ("TETRIS",         lambda: app.goto("tetris")),
-        ("TEXT BOX",       lambda: app.goto("textbox")),
-        ("HOME",           lambda: app.goto("home")),
-        ("PLAY BADAPPLE",  app.play_badapple),
-        ("QUIT",           lambda: setattr(app, "running", False)),
-    ])
-    home = HomeScreen(home_osa, n_points)
-    app.register("home", home)
-    app.register("outro", OutroScreen(home, NYANCAT_WAV))   # BADAPPLE が最後まで再生されたあとの演出
 
-    app.register("menu", MenuScreen(menu))
-    app.register("textbox", TextBoxDemoScreen())
-    app.register("tetris", MessageScreen("TETRIS IS COMING SOON."))   # 後でテトリス本体に差し替える
+    # ---- メニュー(上の階層から順に)
+    video_menu = Menu([
+        ("BADAPPLE",       lambda: app.play_video(BADAPPLE_OSA, BADAPPLE_WAV, after="outro")),
+        ("ENTER THE RINK", lambda: app.play_video(RINK_OSA, RINK_WAV, after="video")),
+        ("BACK",           lambda: app.goto("menu")),
+    ], title="VIDEO")
+    game_menu = Menu([
+        ("TETRIS",         lambda: app.goto("tetris")),
+        ("PAC MAN",        lambda: app.goto("pacman")),
+        ("BACK",           lambda: app.goto("menu")),
+    ], title="GAME")
+
+    def open_sub(name: str, sub: Menu):
+        def _open():
+            sub.index = 0                # 入り直したときは、カーソルを先頭に戻す
+            app.goto(name)
+        return _open
+
+    main_menu = Menu([
+        ("VIDEO",          open_sub("video", video_menu)),
+        ("GAME",           open_sub("game", game_menu)),
+        ("EXPLINE",        lambda: app.goto("expline")),
+        ("HOME",           lambda: app.goto("homeview")),
+    ]) 
+    home = HomeScreen(home_osa, n_points)
+    nyan = HomeScreen(str(NYANCAT_OSA), n_points)            # BADAPPLE のあとに流す動画(nyancat.osa)
+    app.register("home", home)
+    app.register("homeview", HomePreviewScreen(home))        # メニューの HOME: home.osa だけを表示
+    app.register("outro", OutroScreen(nyan, NYANCAT_WAV))    # BADAPPLE が最後まで再生されたあとの演出
+
+    app.register("menu", MenuScreen(main_menu, back="home"))     # Esc → ホーム
+    app.register("video", MenuScreen(video_menu, back="menu"))   # Esc → 上のメニュー
+    app.register("game", MenuScreen(game_menu, back="menu"))
+    app.register("textbox", TextBoxDemoScreen())                 # メニューからは外したが、画面は残してある
+    app.register("tetris", MessageScreen("TETRIS IS COMING SOON.", back="game"))   # 後で本体に差し替える
+    app.register("pacman", MessageScreen("PAC MAN IS COMING SOON.", back="game"))
+    app.register("expline", MessageScreen("EXPLINE IS COMING SOON."))
     app.goto("home")
     return app
 
@@ -234,15 +261,15 @@ def main(argv=None) -> None:
                 if k:
                     app.current.handle(app, *k)
 
-            if app.launch is not None:                      # PLAY BADAPPLE が選ばれた
-                osa, wav = app.launch
+            if app.launch is not None:                      # 動画が選ばれた
+                osa, wav, after = app.launch
                 app.launch = None
                 if ser is None:
                     print("[osagame] --no-serial のときは再生できません")
                 else:
                     _close_serial(ser, stop)                # COM ポートを、プレーヤーに明け渡す
                     ser = None
-                    
+
                     result = _run_player(pg, args, osa, wav)
                     if result == "quit":
                         app.running = False
@@ -250,9 +277,9 @@ def main(argv=None) -> None:
                         ser, stop = _open_serial(args)      # 終わったら、ポートを開き直す
                         seq = 0
                         pg.event.clear()
-                        if result == "end":
-                            app.goto("outro")               # 最後まで再生した → 演出へ(止めたときはメニューのまま)
- 
+                        if result == "end" and after:
+                            app.goto(after)                 # 最後まで再生した → 動画ごとに決めた画面へ(止めたときは今の画面のまま)
+
                 clock.tick()                                # 待っていた時間が dt に入らないようにする
                 continue
 

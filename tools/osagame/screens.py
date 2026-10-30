@@ -31,6 +31,23 @@ class Screen:
         return app.render(self.polylines(app, dt))
 
 
+class HomePreviewScreen(Screen):
+    """メニューの HOME。home.osa だけを表示する(文字は出さない)。Enter か Esc でメニューへ戻る。"""
+
+    def __init__(self, home: HomeScreen, back: str = "menu"):
+        self.home, self.back = home, back
+
+    def on_enter(self, app) -> None:
+        self.home.on_enter(app)                    # home.osa を頭から
+
+    def handle(self, app, key, ch=None) -> None:
+        if key in ("enter", "esc"):
+            app.goto(self.back)
+
+    def frame(self, app, dt: float) -> np.ndarray:
+        return self.home.frame(app, dt)
+
+
 class HomeScreen(Screen):
     """ホーム画面。.osa(GIF などを変換した短い映像)をループ再生する。Enter でメニューへ。
 
@@ -69,8 +86,9 @@ class HomeScreen(Screen):
 
 
 class MenuScreen(Screen):
-    def __init__(self, menu: Menu):
+    def __init__(self, menu: Menu, back: str = "home"):
         self.menu = menu
+        self.back = back                 # Esc で戻る画面の名前
 
     def handle(self, app, key, ch=None) -> None:
         if key == "up":
@@ -80,7 +98,7 @@ class MenuScreen(Screen):
         elif key == "enter":
             self.menu.select()
         elif key == "esc":
-            app.goto("home")
+            app.goto(self.back)          # ← 以前は app.goto("home") だった
 
     def polylines(self, app, dt: float) -> list:
         self.menu.update(dt)

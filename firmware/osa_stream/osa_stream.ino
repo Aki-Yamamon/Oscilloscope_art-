@@ -36,7 +36,7 @@ constexpr uint8_t CTRL_END = 0x01;        // PC から「再生が終わった�
 
 // receivePacket() の戻り値
 //   ※ enum を戻り値の型にすると、Arduino IDE が自動で作る関数の宣言より後に型が現れて、
-//      コンパイルエラーになる。そのため int と定数にしている。
+//       コンパイルエラーになる。そのため int と定数にしている。
 constexpr int RX_NONE = 0;   // データがまだ届いていない
 constexpr int RX_OK = 1;     // 正しいフレームを受け取った
 constexpr int RX_BAD = 2;    // 壊れていた・形式が違った（捨てた）
@@ -174,14 +174,32 @@ static void rxTask(void*) {
   }
 }
 
-// ---- 待機パターン（動く円）----
+// ---- 待機パターン（動くローディングスピナー）----
 constexpr uint8_t IDLE_PTS = 120;
 static uint8_t g_idleX[IDLE_PTS], g_idleY[IDLE_PTS];
 
 static void drawIdle() {
-  for (uint8_t i = 0; i < IDLE_PTS; i++) {
-    dacWrite(PIN_X, g_idleX[i]);
-    dacWrite(PIN_Y, g_idleY[i]);
+  // millis() を使って経過時間から開始位置（オフセット）を計算。
+  // 割る数（ここでは 8）を小さくすると速く、大きくするとゆっくり回ります。
+  uint32_t offset = (millis() / 8) % IDLE_PTS;
+  
+  // 円の4分の3だけを描画し、「C」のように一部を欠けさせる
+  const uint8_t arc_pts = IDLE_PTS * 3 / 4;
+
+  // 行き（弧を描く）
+  for (uint8_t i = 0; i < arc_pts; i++) {
+    uint8_t idx = (offset + i) % IDLE_PTS;
+    dacWrite(PIN_X, g_idleX[idx]);
+    dacWrite(PIN_Y, g_idleY[idx]);
+  }
+  
+  // 帰り（来た道を戻る）
+  // 終点から始点へ一気に戻る不要な線（フライバック）を防ぐため、
+  // なぞるように逆再生して戻します。
+  for (int8_t i = arc_pts - 1; i >= 0; i--) {
+    uint8_t idx = (offset + i) % IDLE_PTS;
+    dacWrite(PIN_X, g_idleX[idx]);
+    dacWrite(PIN_Y, g_idleY[idx]);
   }
 }
 
@@ -203,6 +221,7 @@ void loop() {
   uint16_t n = 0;
   bool have = false;
   portENTER_CRITICAL(&g_mux);
+  
   if (g_hasFrame && (millis() - g_lastRxMs) < IDLE_TIMEOUT_MS) {
     idx = g_front;
     g_busy = idx;                            // この面は、描き終わるまで、受信側に上書きさせない
@@ -224,4 +243,4 @@ void loop() {
     drawIdle();
   }
   g_passes++;
-}
+}//memo
