@@ -2,13 +2,14 @@
 
 流れ:
     1. ENTER THE RINK を選ぶ → 入力画面。`youtube.com/watch?v=` の「=」以降(動画 ID 11 文字)をキーボードで入力
-    2. Enter → yt-dlp で動画の情報を取得(CHECKING...)
+    2. Enter → yt-dlp(1 回だけ)で動画を探す(CHECKING...)
          失敗: FAILED / TRY AGAIN を出して、入力し直し
-         成功: SUCCESS / PLZ WAITING... を出したまま、裏で ダウンロード → .osa 変換 → .wav 作成
+         成功: SUCCESS / PLZ WAITING... を出したまま、裏で mp4 のダウンロード → .osa と .wav の作成
+               (ffmpeg 1 本が、縮小したグレー画像と wav を同時に出し、画像から輪郭を取る)
     3. .osa と .wav がそろったら、そのまま再生(osaconv.play を子プロセスで起動 = BADAPPLE と同じ経路)
     4. 再生した動画は history.json に残り、VIDEO > HISTORY から選んで、また再生できる
 
-保存先: tools/source/addvideo/<動画ID>.osa, <動画ID>.wav, history.json
+保存先: tools/source/addvideo/  <名前>.mp4(残す。再変換のときは再ダウンロードしない) / .osa / .wav / history.json
 
 必要なもの: `pip install yt-dlp`、ffmpeg(PATH に通す)
 画面(Screen)は pygame に依存しない。重い処理は別スレッド(Job)で行うので、その間も ESP32 には
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -106,12 +108,50 @@ def display_name(entry: dict, max_len: int) -> str:
 
 # ------------------------------------------------------------------ 取得・変換のジョブ(別スレッド)
 
+# 輪郭抽出なので低画質で十分。H.264(avc1)なら、ダウンロードも展開も速い。音声つき 1 本のものを優先(結合の手間が無い)
+YT_FORMAT = ("b[height<=360][vcodec^=avc1]/bv*[height<=360][vcodec^=avc1]+ba/"
+             "b[height<=360]/bv*[height<=360]+ba/b")
+MAX_SIDE = 256                   # 変換に使う画像の長辺(px)。オシロは 0〜255 の範囲しか使えないので、これ以上は無駄
+VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov")
+DOWNLOAD_TIMEOUT = 900
+
+
 class _Cancelled(Exception):
     pass
 
 
+def find_video(video_id: str) -> Path | None:
+    """ダウンロード済みの動画ファイル(source/addvideo/ に残してある)。無ければ None。"""
+    stem = file_stem(video_id)
+    for ext in VIDEO_EXTS:
+        p = ADDVIDEO_DIR / f"{stem}{ext}"
+        if p.is_file() and p.stat().st_size > 0:
+            return p
+    return None
+
+
+def parse_info_line(line: str) -> tuple[float, bool, str]:
+    """yt-dlp が最初に出す 1 行 "長さ<TAB>ライブか<TAB>タイトル" → (長さ秒, ライブか, タイトル)。"""
+    parts = line.rstrip("\r\n").split("\t", 2) + ["", ""]
+    try:
+        duration = float(parts[0])
+    except ValueError:
+        duration = 0.0
+    return duration, parts[1] == "True", parts[2]
+
+
+def scaled_size(w: int, h: int, max_side: int = MAX_SIDE) -> tuple[int, int]:
+    """長辺が max_side になるように縮小したサイズ(拡大はしない)。"""
+    k = min(1.0, max_side / max(w, h))
+    return max(2, round(w * k)), max(2, round(h * k))
+
+
 class Job(threading.Thread):
-    """動画 ID から .osa / .wav を作る。stage: check → work → ready / failed。"""
+    """動画 ID から .osa / .wav を作る。stage: check → work → ready / failed。
+
+    流れ: yt-dlp(1 回だけ)で mp4 を保存 → ffmpeg 1 本が「縮小したグレー画像(パイプ)」と「wav」を同時に出す
+          → グレー画像から輪郭 → .osa
+    """
 
     def __init__(self, video_id: str, n_points: int):
         super().__init__(daemon=True)
@@ -124,6 +164,7 @@ class Job(threading.Thread):
         self.total_sec = 0.0             # 動画の長さ(秒)。分からなければ 0
         self._cancel = threading.Event()
         self._proc: subprocess.Popen | None = None
+        self._tmp_dirs: list[Path] = []
 
     # ---- 外から使う
     def cancel(self) -> None:
@@ -132,10 +173,18 @@ class Job(threading.Thread):
         if proc is not None and proc.poll() is None:
             proc.terminate()
 
-    # ---- 中身
-    def _run_cmd(self, cmd: list[str], timeout: float | None = None) -> str:
+    # ---- 部品
+    def _check_cancel(self) -> None:
         if self._cancel.is_set():
             raise _Cancelled
+
+    def _mkdtemp(self, prefix: str) -> Path:
+        d = Path(tempfile.mkdtemp(prefix=prefix, dir=ADDVIDEO_DIR))
+        self._tmp_dirs.append(d)
+        return d
+
+    def _run_cmd(self, cmd: list[str], timeout: float | None = None) -> str:
+        self._check_cancel()
         env = {**os.environ, "PYTHONUTF8": "1"}
         self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       text=True, encoding="utf-8", errors="replace", env=env)
@@ -148,96 +197,163 @@ class Job(threading.Thread):
         finally:
             rc = self._proc.returncode
             self._proc = None
-        if self._cancel.is_set():
-            raise _Cancelled
+        self._check_cancel()
         if rc != 0:
             raise RuntimeError((err or "").strip()[-400:] or f"exit code {rc}")
         return out
 
-    def fetch_info(self) -> dict:
-        out = self._run_cmd([sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings",
-                             "-J", WATCH_URL + self.video_id], timeout=60)
-        info = json.loads(out)
-        if info.get("is_live"):
-            raise RuntimeError("live stream is not supported")
-        if (info.get("duration") or 0) > MAX_DURATION_SEC:
-            raise RuntimeError(f"video is too long (limit {MAX_DURATION_SEC // 60} min)")
-        return info
+    def probe(self, video: Path) -> tuple[int, int, float, bool]:
+        """(幅, 高さ, 長さ秒, 音声があるか)。"""
+        out = self._run_cmd([_tool("ffprobe"), "-v", "error",
+                             "-show_entries", "stream=codec_type,width,height:format=duration",
+                             "-of", "json", str(video)], timeout=30)
+        d = json.loads(out)
+        streams = d.get("streams", [])
+        st = next(x for x in streams if x.get("codec_type") == "video")
+        has_audio = any(x.get("codec_type") == "audio" for x in streams)
+        try:
+            dur = float(d.get("format", {}).get("duration") or 0)
+        except ValueError:
+            dur = 0.0
+        return int(st["width"]), int(st["height"]), dur, has_audio
 
-    def download(self, tmp: Path) -> Path:
-        self._run_cmd([sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "-q",
-                       # 輪郭抽出なので低画質で十分。cv2 で開ける mp4 を優先する
-                       "-f", "b[height<=360][ext=mp4]/bv*[height<=360][ext=mp4]+ba[ext=m4a]/"
-                             "b[height<=360]/bv*[height<=360]+ba/b",
-                       "-o", str(tmp / "video.%(ext)s"), WATCH_URL + self.video_id], timeout=900)
-        files = [p for p in tmp.glob("video.*") if p.suffix not in (".part", ".ytdl")]
+    # ---- 1) 動画を手に入れる(保存済みならそれを使う)
+    def acquire(self) -> Path:
+        """動画ファイルを返す。stage を work にして、title / total_sec を埋める。"""
+        vid = self.video_id
+        saved = find_video(vid)
+        if saved is not None:                                    # 前に保存した mp4 がある → ダウンロード不要
+            self.title = next((e.get("title", "") for e in load_history() if e["id"] == vid), "")
+            self.phase, self.stage = "CONVERT", "work"
+            return saved
+
+        tmp = self._mkdtemp("dl_")
+        cmd = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "-q", "--no-progress",
+               # 最初の 1 行(長さ・ライブか・タイトル)が出た = 動画が見つかった。そのままダウンロードを続ける
+               "--print", "before_dl:%(duration)s\t%(is_live)s\t%(title)s", "--no-simulate",
+               "-N", "4", "-f", YT_FORMAT, "-o", str(tmp / "video.%(ext)s"), WATCH_URL + vid]
+        self._check_cancel()
+        errf = tempfile.TemporaryFile()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True,
+                                encoding="utf-8", errors="replace",
+                                env={**os.environ, "PYTHONUTF8": "1"})
+        self._proc = proc
+        watchdog = threading.Timer(DOWNLOAD_TIMEOUT, proc.kill)
+        watchdog.start()
+        try:
+            line = proc.stdout.readline()
+            if not line:
+                proc.wait()
+                self._check_cancel()
+                errf.seek(0)
+                raise RuntimeError(errf.read().decode("utf-8", "replace").strip()[-400:] or "video not found")
+            duration, is_live, title = parse_info_line(line)
+            if is_live:
+                raise RuntimeError("live stream is not supported")
+            if duration > MAX_DURATION_SEC:
+                raise RuntimeError(f"video is too long (limit {MAX_DURATION_SEC // 60} min)")
+            self.title, self.total_sec = title, duration
+            self.phase, self.stage = "DOWNLOAD", "work"          # ← ここで SUCCESS
+            proc.stdout.read()                                   # ダウンロードが終わるまで待つ
+            rc = proc.wait()
+            self._check_cancel()
+            if rc != 0:
+                errf.seek(0)
+                raise RuntimeError(errf.read().decode("utf-8", "replace").strip()[-400:] or f"exit code {rc}")
+        except BaseException:
+            if proc.poll() is None:
+                proc.kill()
+            raise
+        finally:
+            watchdog.cancel()
+            self._proc = None
+            errf.close()
+        files = [p for p in tmp.glob("video.*") if p.suffix in VIDEO_EXTS]
         if not files:
             raise RuntimeError("download produced no file")
-        return files[0]
+        dest = ADDVIDEO_DIR / f"{file_stem(vid)}{files[0].suffix}"
+        os.replace(files[0], dest)                               # mp4 は、そのまま残す
+        return dest
 
+    # ---- 2) mp4 → .osa と .wav
     def _on_progress(self, sec: float) -> None:
         self.sec = sec
-        if self._cancel.is_set():
-            raise _Cancelled                                 # 変換の途中でも、Esc で止められる
 
-    def convert(self, video: Path, out_osa: Path, tmp: Path) -> dict:
-        from osaconv.convert import convert_video
+    def process(self, video: Path, out_osa: Path, out_wav: Path) -> dict:
+        """ffmpeg 1 本で「縮小したグレー画像」をパイプに流しつつ wav も書き、画像から輪郭 → .osa を作る。"""
+        from osaconv.contour import ContourParams, frame_to_contours
+        from osaconv.pack import OsaWriter
+        from osaconv.path import contours_to_path
+
+        w, h, dur, has_audio = self.probe(video)
+        if not self.total_sec:
+            self.total_sec = dur
+        sw, sh = scaled_size(w, h)
+        frame_bytes = sw * sh
+        cmd = [_tool("ffmpeg"), "-v", "error", "-i", str(video),
+               # 出力 1: 画像(fps を 30 にそろえ、縮小して、グレーにして、パイプへ)
+               "-map", "0:v:0", "-an", "-vf", f"fps={FPS},scale={sw}:{sh}:flags=area,format=gray",
+               "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+        if has_audio:                       # 出力 2: 音声(16bit PCM / 2ch / 44100Hz)。無い動画では付けない
+            cmd += ["-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(AUDIO_RATE), "-c:a", "pcm_s16le",
+                    "-y", str(out_wav)]
         self.phase, self.sec = "CONVERT", 0.0
+        params = ContourParams()
+        frames = 0
+        errf = tempfile.TemporaryFile()
+        self._check_cancel()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf)
+        self._proc = proc
         try:
-            stats = convert_video(video, out_osa, fps=FPS, n_points=self.n_points,
-                                  on_progress=self._on_progress)
-        except RuntimeError:
-            # cv2 が開けない形式(VP9 など)は、ffmpeg で H.264 にしてもう一度
-            fixed = tmp / "fixed.mp4"
-            self._run_cmd([_ffmpeg(), "-y", "-v", "error", "-i", str(video), "-an",
-                           "-c:v", "libx264", "-preset", "veryfast", str(fixed)])
-            self.sec = 0.0
-            stats = convert_video(fixed, out_osa, fps=FPS, n_points=self.n_points,
-                                  on_progress=self._on_progress)
-        if stats["frames"] <= 0:
-            raise RuntimeError("no frames were converted")
-        return stats
-
-    def make_wav(self, video: Path, out_wav: Path, seconds: float) -> None:
-        """16bit PCM / 2ch / 44100Hz の WAV にする。音声が無い動画は、無音の WAV を作る。"""
-        self.phase = "AUDIO"
-        try:
-            self._run_cmd([_ffmpeg(), "-y", "-v", "error", "-i", str(video), "-vn", "-ac", "2",
-                           "-ar", str(AUDIO_RATE), "-c:a", "pcm_s16le", str(out_wav)])
-            if out_wav.is_file() and out_wav.stat().st_size > 44:
-                return
-        except RuntimeError:
-            pass
-        with wave.open(str(out_wav), "wb") as w:
-            w.setnchannels(2)
-            w.setsampwidth(2)
-            w.setframerate(AUDIO_RATE)
-            w.writeframes(bytes(int(seconds * AUDIO_RATE) * 4))
+            with OsaWriter(out_osa, fps=FPS, points_per_frame=self.n_points) as writer:
+                while True:
+                    buf = proc.stdout.read(frame_bytes)
+                    if len(buf) < frame_bytes:
+                        break
+                    self._check_cancel()
+                    gray = np.frombuffer(buf, dtype=np.uint8).reshape(sh, sw)
+                    contours = frame_to_contours(gray, params)
+                    writer.write_frame(contours_to_path(contours, gray.shape, self.n_points))
+                    frames += 1
+                    if frames % 15 == 0:
+                        self._on_progress(frames / FPS)
+            rc = proc.wait()
+            self._check_cancel()
+            if frames == 0:
+                errf.seek(0)
+                raise RuntimeError(errf.read().decode("utf-8", "replace").strip()[-400:] or f"ffmpeg exit {rc}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            self._proc = None
+            errf.close()
+        self._on_progress(frames / FPS)
+        if not out_wav.is_file() or out_wav.stat().st_size <= 44:   # 音声が無い動画 → 無音の wav
+            self.phase = "AUDIO"
+            write_silent_wav(out_wav, frames / FPS)
+        return {"frames": frames, "seconds": frames / FPS}
 
     def run(self) -> None:
         vid = self.video_id
-        tmp = None
         try:
             ADDVIDEO_DIR.mkdir(parents=True, exist_ok=True)
             if is_cached(vid):                                    # 変換済みなら、すぐ再生できる
                 self.title = next((e.get("title", "") for e in load_history() if e["id"] == vid), "")
                 self.stage = "ready"
                 return
-            info = self.fetch_info()                              # ← ここが通れば SUCCESS
-            self.title = str(info.get("title") or "")
-            self.total_sec = float(info.get("duration") or 0)
-            self.phase = "DOWNLOAD"
-            self.stage = "work"
-            tmp = Path(tempfile.mkdtemp(prefix=f"{vid}_", dir=ADDVIDEO_DIR))
-            video = self.download(tmp)
+            t0 = time.perf_counter()
+            video = self.acquire()                                # ← ここを通れば SUCCESS
+            t1 = time.perf_counter()
+            tmp = self._mkdtemp("out_")
             osa, wav = video_paths(vid)
-            tmp_osa, tmp_wav = tmp / "out.osa", tmp / "out.wav"
-            stats = self.convert(video, tmp_osa, tmp)
-            self.make_wav(video, tmp_wav, stats["seconds"])
-            if self._cancel.is_set():
-                raise _Cancelled
-            os.replace(tmp_wav, wav)                              # 2 つがそろった時点で ready
-            os.replace(tmp_osa, osa)
+            stats = self.process(video, tmp / "out.osa", tmp / "out.wav")
+            self._check_cancel()
+            os.replace(tmp / "out.wav", wav)                      # 2 つがそろった時点で ready
+            os.replace(tmp / "out.osa", osa)
+            t2 = time.perf_counter()
+            print(f"[addvideo] {vid}: download {t1 - t0:.1f}s, convert {t2 - t1:.1f}s "
+                  f"({stats['seconds'] / max(t2 - t1, 1e-6):.1f}x realtime)")
             self.stage = "ready"
         except _Cancelled:
             self.stage = "cancelled"
@@ -246,15 +362,24 @@ class Job(threading.Thread):
             print(f"[addvideo] FAILED {vid}: {e}")
             self.stage = "failed"
         finally:
-            if tmp is not None:
-                shutil.rmtree(tmp, ignore_errors=True)
+            for d in self._tmp_dirs:
+                shutil.rmtree(d, ignore_errors=True)
 
 
-def _ffmpeg() -> str:
-    exe = shutil.which("ffmpeg")
+def write_silent_wav(path: Path, seconds: float) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(AUDIO_RATE)
+        w.writeframes(bytes(int(seconds * AUDIO_RATE) * 4))
+
+
+def _tool(name: str) -> str:
+    exe = shutil.which(name)
     if exe is None:
-        raise RuntimeError("ffmpeg was not found on PATH")
+        raise RuntimeError(f"{name} was not found on PATH")
     return exe
+
 
 
 def launch_video(app, video_id: str, title: str = "") -> None:
