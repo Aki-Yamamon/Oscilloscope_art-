@@ -70,7 +70,7 @@ class PacmanLogic:
         self.pacman = None
         self.ghosts = []
         
-        self.pacman_speed = 6.0
+        self.pacman_speed = 6.5 # 少しスピードアップ
         
         # イベントフラグ
         self.event_chomp = False
@@ -137,7 +137,6 @@ class PacmanLogic:
                 ent.dir = 'none'
                 ent.move_frac = 0.0
                 
-            # ゴーストの交差点でのAI処理
             if ent.is_ghost and ent.dir == 'none':
                 valid_dirs = []
                 for d_name, (vx, vy) in DIRS.items():
@@ -146,11 +145,10 @@ class PacmanLogic:
                         valid_dirs.append(d_name)
                 
                 if valid_dirs:
-                    # 難易度調整: ステージが進むほど、パックマンを賢く追跡する(最大85%の確率で最短距離を選ぶ)
-                    smartness = min(0.85, self.stage * 0.15)
+                    # 難易度調整: 最初からかなり賢く、ステージが進むとほぼ確実に最短距離を選ぶ
+                    smartness = min(0.98, 0.5 + self.stage * 0.15)
                     
                     if random.random() < smartness and not self.power_mode:
-                        # 追跡モード: パックマンとの距離が一番短くなる方向を選ぶ
                         best_dir = valid_dirs[0]
                         min_dist = float('inf')
                         for d_name in valid_dirs:
@@ -164,7 +162,6 @@ class PacmanLogic:
                         ent.dir = best_dir
                         
                     elif random.random() < smartness and self.power_mode:
-                        # 逃亡モード: いじけ中はパックマンから一番遠ざかる方向を選ぶ
                         best_dir = valid_dirs[0]
                         max_dist = -1
                         for d_name in valid_dirs:
@@ -176,9 +173,7 @@ class PacmanLogic:
                                 max_dist = dist
                                 best_dir = d_name
                         ent.dir = best_dir
-                        
                     else:
-                        # ランダム移動
                         ent.dir = random.choice(valid_dirs)
 
     def update(self, dt):
@@ -192,7 +187,6 @@ class PacmanLogic:
 
         self._update_entity(self.pacman, dt, self.pacman_speed)
         
-        # エサを食べる判定
         cell_val = self.grid[self.pacman.y][self.pacman.x]
         if cell_val == 2:
             self.grid[self.pacman.y][self.pacman.x] = 0
@@ -204,21 +198,21 @@ class PacmanLogic:
             self.score += 50
             self.dots_left -= 1
             self.power_mode = True
-            self.power_timer = 8.0
+            # ステージが進むにつれて無敵時間が短くなる（最小2秒）
+            self.power_timer = max(2.0, 6.5 - self.stage * 0.8)
             self.event_chomp = True
 
         if self.dots_left <= 0:
             self.event_clear = True
             return
             
-        # ステージ進行によるゴーストの速度上昇 (最大5.5)
-        base_ghost_speed = min(5.5, 3.8 + self.stage * 0.3)
+        # 難易度調整: ゴーストの初期速度アップ＆成長速度アップ
+        base_ghost_speed = min(7.5, 4.5 + self.stage * 0.4)
         g_speed = base_ghost_speed * 0.5 if self.power_mode else base_ghost_speed
         
         for g in self.ghosts:
             self._update_entity(g, dt, g_speed)
             
-            # 当たり判定
             dist = abs(self.pacman.x - g.x) + abs(self.pacman.y - g.y)
             if dist < 1.0:
                 if self.power_mode:
@@ -226,4 +220,4 @@ class PacmanLogic:
                     self.score += 200
                     self.event_eatghost = True
                 else:
-                    self.event_death = True # 死亡イベントを発火
+                    self.event_death = True

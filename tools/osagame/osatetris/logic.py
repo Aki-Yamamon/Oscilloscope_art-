@@ -1,6 +1,5 @@
 import random
 
-# SRS (Super Rotation System) Wall kick data
 KICK_JLSTZ = {
     (0, 1): [(0,0), (-1,0), (-1, 1), (0,-2), (-1,-2)],
     (1, 0): [(0,0), ( 1,0), ( 1,-1), (0, 2), ( 1, 2)],
@@ -53,20 +52,19 @@ class TetrisLogic:
         self.score = 0
         self.bag = []
         self.next_minos = []
-        self.hold_mino = None
-        self.can_hold = True
         
         self.current_shape = None
         self.current_x = 0
         self.current_y = 0
         self.current_rot = 0
-        self.last_action_rotate = False # T-Spin判定用
+        self.last_action_rotate = False 
         
         self.game_over = False
         self.fall_timer = 0.0
-        self.fall_speed = 1.0 
         
-        # 音声用イベントフラグ
+        # 難易度調整: 初期速度を速く
+        self.fall_speed = 0.7 
+        
         self.event_move = False
         self.event_rotate = False
         self.event_harddrop = False
@@ -94,24 +92,9 @@ class TetrisLogic:
         self.current_rot = 0
         self.current_x = 4
         self.current_y = 18
-        self.can_hold = True
         self.last_action_rotate = False
         if self._is_collision(self.current_x, self.current_y, self.current_rot):
             self.game_over = True
-
-    def hold(self):
-        if not self.can_hold:
-            return
-        if self.hold_mino is None:
-            self.hold_mino = self.current_shape
-            self.spawn()
-        else:
-            self.current_shape, self.hold_mino = self.hold_mino, self.current_shape
-            self.current_rot = 0
-            self.current_x = 4
-            self.current_y = 18
-            self.last_action_rotate = False
-        self.can_hold = False
 
     def _is_collision(self, cx, cy, rot):
         blocks = get_rotated_blocks(self.current_shape, rot)
@@ -129,7 +112,7 @@ class TetrisLogic:
             self.current_x += dx
             self.current_y += dy
             if dx != 0:
-                self.event_move = True # 横移動時のみSEフラグを立てる
+                self.event_move = True 
             self.last_action_rotate = False
             return True
         return False
@@ -147,7 +130,7 @@ class TetrisLogic:
                 self.current_y += dy
                 self.current_rot = new_rot
                 self.event_rotate = True
-                self.last_action_rotate = True # 回転を最後のアクションとして記録
+                self.last_action_rotate = True
                 return
 
     def hard_drop(self):
@@ -156,7 +139,6 @@ class TetrisLogic:
         self.lock(is_harddrop=True)
 
     def lock(self, is_harddrop=False):
-        # T-Spin 判定 (Tミノであり、最後のアクションが回転であり、四隅のうち3つ以上が埋まっていること)
         is_t_spin = False
         if self.current_shape == 'T' and self.last_action_rotate:
             corners = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
@@ -178,7 +160,6 @@ class TetrisLogic:
         
         lines_cleared = self._clear_lines()
         
-        # サウンドイベントの優先順位付けとフラグ設定
         if lines_cleared > 0:
             self.event_clear = True
         elif is_harddrop:
@@ -206,6 +187,10 @@ class TetrisLogic:
         elif lines_cleared == 2: self.score += 300
         elif lines_cleared == 3: self.score += 500
         elif lines_cleared == 4: self.score += 800
+        
+        # 難易度調整: スコアが上がるにつれて落下速度が指数関数的に速くなる
+        if lines_cleared > 0:
+            self.fall_speed = max(0.05, 0.7 * (0.85 ** (self.score / 500)))
         
         return lines_cleared
 

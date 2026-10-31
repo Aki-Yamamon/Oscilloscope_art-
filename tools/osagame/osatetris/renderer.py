@@ -5,7 +5,7 @@ from osagame.osatetris.logic import get_rotated_blocks
 CELL_SIZE = 10
 FIELD_W = 10 * CELL_SIZE
 FIELD_H = 20 * CELL_SIZE
-FIELD_X = (255 - FIELD_W) / 2  # 真ん中へ配置
+FIELD_X = (255 - FIELD_W) / 2
 FIELD_Y = (255 - FIELD_H) / 2
 
 def draw_mino(cx, cy, shape, rot, offset_x, offset_y, size=CELL_SIZE):
@@ -14,9 +14,7 @@ def draw_mino(cx, cy, shape, rot, offset_x, offset_y, size=CELL_SIZE):
     for bx, by in blocks:
         x = offset_x + (cx + bx) * size
         y = offset_y + (cy + by) * size
-        # 外枠
         polys.append(rect_polyline(x, y, size, size))
-        # 軽い斜線 (左下から右上へ)
         polys.append(np.array([(x, y), (x + size, y + size)], dtype=np.float64))
     return polys
 
@@ -32,37 +30,25 @@ def render_tetris(logic):
             if logic.board[y][x]:
                 px = FIELD_X + x * CELL_SIZE
                 py = FIELD_Y + y * CELL_SIZE
-                # 外枠
                 polys.append(rect_polyline(px, py, CELL_SIZE, CELL_SIZE))
-                # 軽い斜線 (左下から右上へ)
                 polys.append(np.array([(px, py), (px + CELL_SIZE, py + CELL_SIZE)], dtype=np.float64))
     
-    # 操作中のミノ
     if not logic.game_over and logic.current_shape:
         polys.extend(draw_mino(logic.current_x, logic.current_y, logic.current_shape, logic.current_rot, FIELD_X, FIELD_Y))
 
-    # UI: 左上 HOLD
-    hx, hy = 15, 210
-    polys.extend(text_to_polylines("HOLD", hx, hy, 10))
-    polys.append(rect_polyline(hx, hy - 40, 40, 35))
-    if logic.hold_mino:
-        polys.extend(draw_mino(1, 0, logic.hold_mino, 0, hx, hy - 30, size=CELL_SIZE))
-        
-    # UI: HOLD下 SCORE
+    # UI: 左側 SCORE (元の位置 sx=15 に戻しました)
     sx, sy = 15, 120
-    polys.extend(text_to_polylines("SCORE", sx, sy, 10))
-    polys.extend(text_to_polylines(str(logic.score), sx, sy - 15, 10))
+    polys.extend(text_to_polylines(str(logic.score), sx, sy, 10))
     
-    # UI: 右側 NEXT5
+    # UI: 右側 NEXT (上位3つまで)
     nx, ny = 190, 210
     polys.extend(text_to_polylines("NEXT", nx, ny, 10))
-    for i, shape in enumerate(logic.next_minos):
+    for i, shape in enumerate(logic.next_minos[:3]): 
         y = ny - 25 - i * 35
         polys.extend(draw_mino(0, 0, shape, 0, nx + 10, y, size=8))
 
-    # ゲームオーバーテキスト
     if logic.game_over:
         polys.extend(text_to_polylines("GAME OVER", FIELD_X - 10, FIELD_Y + FIELD_H / 2, 14))
-        polys.extend(text_to_polylines("PRESS ESC", FIELD_X, FIELD_Y + FIELD_H / 2 - 20, 10))
+        polys.extend(text_to_polylines("PRESS ENTER", FIELD_X, FIELD_Y + FIELD_H / 2 - 20, 10))
 
     return polys
