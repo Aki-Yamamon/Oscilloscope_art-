@@ -1,5 +1,6 @@
 """輪郭(や折れ線)の集まりを、ESP32 に渡す「1 本の経路(N 点、値は 0〜255)」にする。
 
+v3: _order / _is_closed / _sample_edges を高速化(結果は v2 と同じ)。
 v2: つなぎ線(ジャンプ)を「補間しない」ようにした版。 tools/osaconv/path.py と差し替えて使う。
     contours_to_path(contours, frame_shape, n_points) のシグネチャは従来と同じ。
 
@@ -38,8 +39,15 @@ def _polyline_length(pts: np.ndarray) -> float:
     return float(_seg_lengths(pts).sum())
 
 
+def _same_point(a, b) -> bool:
+    """np.allclose(a, b) と同じ判定(atol=1e-8, rtol=1e-5)を、Python の float だけで行う。
+    np.allclose は 1 回数十マイクロ秒かかり、毎フレーム何千回も呼ぶと支配的になる。"""
+    ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+    return abs(ax - bx) <= 1e-8 + 1e-5 * abs(bx) and abs(ay - by) <= 1e-8 + 1e-5 * abs(by)
+
+
 def _is_closed(p: np.ndarray) -> bool:
-    return len(p) > 2 and bool(np.allclose(p[0], p[-1]))
+    return len(p) > 2 and _same_point(p[0], p[-1])
 
 
 def _clean(p: np.ndarray) -> np.ndarray | None:
@@ -48,7 +56,7 @@ def _clean(p: np.ndarray) -> np.ndarray | None:
     closed = _is_closed(p)
     keep = np.r_[True, _seg_lengths(p) > EPS]
     p = p[keep]
-    if closed and not np.allclose(p[0], p[-1]):
+    if closed and not _same_point(p[0], p[-1]):
         p = np.vstack([p, p[:1]])
     if len(p) < 2:
         return None
@@ -89,28 +97,51 @@ def _order(polys: list[np.ndarray]) -> list[np.ndarray]:
     - 閉じた輪郭: いちばん近い頂点から回り始める(1 周して同じ点に戻る)
     - 開いた折れ線: 近い方の端から始める(向きは反転してよい)
       → 一筆書きの折れ線(オイラー路など)を渡せば、ジャンプなしで描ける
-    """
-    remaining = list(polys)
-    first = remaining.pop(int(np.argmax([_polyline_length(p) for p in remaining])))
-    out = [first]
-    pos = first[-1]
 
-    while remaining:
-        best = (np.inf, 0, 0, False)          # (距離, 候補番号, 頂点番号, 反転するか)
-        for i, p in enumerate(remaining):
-            if _is_closed(p):
-                d = np.hypot(p[:, 0] - pos[0], p[:, 1] - pos[1])
-                k = int(np.argmin(d))
-                cand = (float(d[k]), i, k, False)
-            else:
-                d0 = float(np.hypot(*(p[0] - pos)))
-                d1 = float(np.hypot(*(p[-1] - pos)))
-                cand = (d0, i, 0, False) if d0 <= d1 else (d1, i, 0, True)
-            if cand[0] < best[0]:
-                best = cand
-        _, i, k, rev = best
-        p = remaining.pop(i)
-        p = _rotate_closed(p, k) if _is_closed(p) else (p[::-1] if rev else p)
+    v3: 結果は旧版と同じだが、「残りの全候補までの距離」を 1 ステップごとに numpy で一括計算する。
+        旧版は候補ごとに Python ループと np.allclose を回していたので、本数 n の 2 乗に比例して遅かった。
+    """
+    n = len(polys)
+    if n == 0:
+        return []
+
+    closed = np.array([_is_closed(p) for p in polys], dtype=bool)   # 判定は本数分の 1 回だけ
+    first = int(np.argmax([_polyline_length(p) for p in polys]))
+    alive = np.ones(n, dtype=bool)
+    alive[first] = False
+    out = [polys[first]]
+    pos = polys[first][-1]
+
+    c_idx = np.flatnonzero(closed)          # 閉じた輪郭: 全頂点を 1 つの配列にまとめる
+    o_idx = np.flatnonzero(~closed)         # 開いた折れ線: 両端だけ見ればよい
+    if len(c_idx):
+        c_pts = np.vstack([polys[i] for i in c_idx])
+        c_len = np.array([len(polys[i]) for i in c_idx])
+        c_start = np.r_[0, np.cumsum(c_len)[:-1]]
+    if len(o_idx):
+        o_head = np.array([polys[i][0] for i in o_idx])
+        o_tail = np.array([polys[i][-1] for i in o_idx])
+
+    dist = np.empty(n)
+    for _ in range(n - 1):
+        dist.fill(np.inf)
+        if len(c_idx):
+            d = np.hypot(c_pts[:, 0] - pos[0], c_pts[:, 1] - pos[1])
+            dist[c_idx] = np.minimum.reduceat(d, c_start)       # 輪郭ごとの「最も近い頂点」までの距離
+        if len(o_idx):
+            d0 = np.hypot(o_head[:, 0] - pos[0], o_head[:, 1] - pos[1])
+            d1 = np.hypot(o_tail[:, 0] - pos[0], o_tail[:, 1] - pos[1])
+            dist[o_idx] = np.minimum(d0, d1)
+        dist[~alive] = np.inf
+        i = int(np.argmin(dist))            # 同じ距離なら、番号の小さい方(旧版と同じ)
+        alive[i] = False
+
+        p = polys[i]
+        if closed[i]:
+            k = int(np.argmin(np.hypot(p[:, 0] - pos[0], p[:, 1] - pos[1])))
+            p = _rotate_closed(p, k)
+        elif float(np.hypot(*(p[0] - pos))) > float(np.hypot(*(p[-1] - pos))):
+            p = p[::-1]
         out.append(p)
         pos = p[-1]
     return out
@@ -151,13 +182,15 @@ def _allocate(weights: np.ndarray, total: int, minimum: int) -> np.ndarray:
 def _sample_edges(p: np.ndarray, ks: np.ndarray) -> np.ndarray:
     """辺 e に ks[e] 点を等間隔に置く(辺の終点を含み、始点は含まない)。先頭に始点を 1 つ足す。
 
-    頂点は必ず点になるので、角が丸まらない。
+    頂点は必ず点になるので、角が丸まらない。(v3: 辺ごとのループなしで、一括で計算する)
     """
-    parts = [p[:1]]
-    for a, b, k in zip(p[:-1], p[1:], ks):
-        t = (np.arange(1, k + 1) / k)[:, None]
-        parts.append(a + (b - a) * t)
-    return np.vstack(parts)
+    ks = np.asarray(ks, dtype=np.int64)
+    a = np.repeat(p[:-1], ks, axis=0)
+    b = np.repeat(p[1:], ks, axis=0)
+    starts = np.cumsum(ks) - ks
+    j = np.arange(int(ks.sum())) - np.repeat(starts, ks) + 1      # 辺の中での通し番号 1..k
+    t = (j / np.repeat(ks, ks))[:, None]
+    return np.vstack([p[:1], a + (b - a) * t])
 
 
 def _sample_arclength(p: np.ndarray, m: int) -> np.ndarray:
@@ -191,10 +224,12 @@ def polylines_to_path(
     polys = _order(polys)
 
     # 点が足りないときは、短い折れ線から捨てる(最小でも、1 本あたり 始点 + 1 辺 = 2 点が要る)
-    polys.sort(key=_polyline_length, reverse=True)
-    while len(polys) > 1 and 2 * len(polys) > n_points:
-        polys.pop()
-    polys = _order(polys)
+    # v3: 捨てる必要があるときだけ並べ直す(旧版は毎回 _order を 2 回呼んでいた)
+    if 2 * len(polys) > n_points:
+        polys.sort(key=_polyline_length, reverse=True)
+        while len(polys) > 1 and 2 * len(polys) > n_points:
+            polys.pop()
+        polys = _order(polys)
 
     n_poly = len(polys)
     n_edges = sum(len(p) - 1 for p in polys)

@@ -23,6 +23,8 @@ from osagame.ui import Menu
 import subprocess
 import sys
 from pathlib import Path
+import time, tracemalloc
+import cProfile, pstats, io
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]       # tools/
 SOURCE_DIR = TOOLS_DIR / "source"                      # home.osa / badapple.osa / badapple.wav の置き場所
@@ -251,17 +253,45 @@ def _translate(pg, ev):
         return "char", ev.text
     return None
 
+# ----------------------------------------------------------------------------
+# tools/osagame/app.py の「# ------ pygame 側」以降(_draw_preview と main)の差し替え用。
+#
+# 差し替え手順:
+#   1. app.py の先頭の import に、次の 2 行を足す
+#          import time
+#          import tracemalloc
+#   2. app.py の _draw_preview() と main() を、このファイルの内容で置き換える
+#      (_translate はそのまま残す)
+#
+# 変更点:
+#   - _draw_preview: 1000 回の draw.line をやめ、ジャンプで区切った「連続した区間」ごとに
+#     draw.lines で描く(Python のループが 1000 回 → 数回〜数十回に減る)
+#   - dt の上限(0.1 秒): 一度重くなったときに、ゲームの時間が一気に進むのを防ぐ
+#   - --profile: 5 秒ごとに、frame / write / preview / 待ち時間 / メモリ / スレッド数 を表示する
+#   - --preview-every N: プレビューを N フレームに 1 回だけ描く(既定 1 = 毎フレーム)
+# ----------------------------------------------------------------------------
 
+# ------------------------------------------------------------------ pygame 側
+ 
 def _draw_preview(pg, surface, xy: np.ndarray, scale: int = 2, jump: float = 24.0) -> None:
-    """送っている点列を PC 画面にも描く。離れすぎた点どうしは線で結ばない(= ジャンプは見えない)。"""
+    """送っている点列を PC 画面にも描く。離れすぎた点どうしは線で結ばない(= ジャンプは見えない)。
+ 
+    numpy でジャンプの位置を一括で求め、つながっている区間ごとに draw.lines で描く。
+    """
     surface.fill((0, 12, 0))
     size = int(256 * scale)
-    pts = [(int(x * scale), size - 1 - int(y * scale)) for x, y in xy.astype(int)]
-    for a, b in zip(pts[:-1], pts[1:]):
-        if abs(a[0] - b[0]) + abs(a[1] - b[1]) <= jump * scale:
-            pg.draw.line(surface, (60, 255, 90), a, b, 1)
-
-# =====main==============================
+    pts = xy.astype(np.int32) * scale
+    pts[:, 1] = size - 1 - pts[:, 1]
+ 
+    # 隣り合う点の距離(マンハッタン距離)が jump * scale を超えたところで区切る
+    gaps = np.abs(np.diff(pts, axis=0)).sum(axis=1) > jump * scale
+    cut = np.flatnonzero(gaps) + 1                 # 新しい区間が始まる位置
+    for run in np.split(pts, cut):
+        if len(run) >= 2:
+            pg.draw.lines(surface, (60, 255, 90), False, run.tolist(), 1)
+ 
+ 
+# ===== main ==============================
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="ホーム / メニュー / テキストボックスを ESP32 に表示する")
     ap.add_argument("--port", help="例: COM6(--no-serial のときは不要)")
@@ -274,22 +304,26 @@ def main(argv=None) -> None:
     ap.add_argument("--home", nargs="?", const=str(HOME_OSA), default=str(HOME_OSA),
                     help=f"ホーム画面の .osa(省略・値なしで {HOME_OSA})")
     ap.add_argument("--no-serial", action="store_true", help="ESP32 に送らず、PC 画面だけ動かす")
-    ap.add_argument("--no-preview", action="store_true", help="PC画面へのプレビュー描画をオフにする(本番の負荷軽減用)") # ← ★これを追加
+    ap.add_argument("--no-preview", action="store_true", help="PC画面へのプレビュー描画をオフにする(本番の負荷軽減用)")
+    ap.add_argument("--preview-every", type=int, default=1,
+                    help="プレビューを N フレームに 1 回だけ描く(既定 1 = 毎フレーム)")
+    ap.add_argument("--profile", action="store_true",
+                    help="5 秒ごとに、処理時間・メモリ・スレッド数を表示する(重くなる原因の調査用)")
     ap.add_argument("--reset-wait", type=float, default=2.0)
     args = ap.parse_args(argv)
     if not args.no_serial and not args.port:
         ap.error("--port を指定してください(ESP32 なしなら --no-serial)")
     if not Path(args.home).is_file():
         sys.exit(f"[ERROR] ホーム用のファイルがありません: {args.home}")
-
+    args.preview_every = max(1, args.preview_every)
+ 
     import pygame as pg
     from osaconv.stream import TYPE_FRAME_XY, build_packet
-
-    scale = (args.scale_x or args.scale, args.scale_y or args.scale)
+ 
     app = build_app(args.points, args.home)
     app.audio = PygameAudio(pg)
     ser, stop = (None, None) if args.no_serial else _open_serial(args)
-
+ 
     pg.init()
     # プレビューなしの場合はウィンドウを小さくして邪魔にならないようにする
     win_size = (150, 150) if args.no_preview else (512, 512)
@@ -299,6 +333,16 @@ def main(argv=None) -> None:
     pg.key.set_repeat(350, 90)
     clock = pg.time.Clock()
     seq = 0
+    frame_no = 0
+ 
+    # ---- 調査用の計測(--profile のときだけ動く)
+    prof = {"frame": 0.0, "write": 0.0, "prev": 0.0, "wait": 0.0, "n": 0}
+    prof_t = time.perf_counter()
+    profiler = cProfile.Profile() if args.profile else None
+    cpu_t = time.process_time()
+    if args.profile:
+        tracemalloc.start()
+ 
     try:
         while app.running:
             for ev in pg.event.get():
@@ -308,7 +352,7 @@ def main(argv=None) -> None:
                 k = _translate(pg, ev)
                 if k:
                     app.current.handle(app, *k)
-
+ 
             if app.launch is not None:
                 osa, wav, after = app.launch
                 app.launch = None
@@ -317,7 +361,7 @@ def main(argv=None) -> None:
                 else:
                     _close_serial(ser, stop)
                     ser = None
-
+ 
                     result = _run_player(pg, args, osa, wav)
                     if result == "quit":
                         app.running = False
@@ -327,23 +371,61 @@ def main(argv=None) -> None:
                         pg.event.clear()
                         if result == "end" and after:
                             app.goto(after)
-
+ 
                 clock.tick()
                 continue
-
-            dt = clock.tick(args.fps) / 1000.0
+ 
+            t0 = time.perf_counter()
+            # 重くなったときに、ゲームの時間が一気に進まないよう dt に上限をつける
+            dt = min(clock.tick(args.fps) / 1000.0, 0.1)
+            t1 = time.perf_counter()
+ 
+            if profiler is not None:
+                profiler.enable()
             xy = app.current.frame(app, dt)
+            if profiler is not None:
+                profiler.disable()
+            t2 = time.perf_counter()
+ 
             if ser is not None:
                 ser.write(build_packet(TYPE_FRAME_XY, seq, xy.tobytes()))
                 seq += 1
-                
-            # ★ プレビュー描画の条件分岐
+            t3 = time.perf_counter()
+ 
             if not args.no_preview:
-                _draw_preview(pg, surface, xy)
+                if frame_no % args.preview_every == 0:
+                    _draw_preview(pg, surface, xy)
             else:
-                surface.fill((0, 0, 0)) # プレビューを描画せず真っ暗にするだけ
-                
+                surface.fill((0, 0, 0))    # プレビューを描画せず真っ暗にするだけ
             pg.display.flip()
+            t4 = time.perf_counter()
+            frame_no += 1
+ 
+            if args.profile:
+                prof["wait"] += t1 - t0
+                prof["frame"] += t2 - t1
+                prof["write"] += t3 - t2
+                prof["prev"] += t4 - t3
+                prof["n"] += 1
+                if t4 - prof_t >= 5.0:
+                    n = max(prof["n"], 1)
+                    cur, peak = tracemalloc.get_traced_memory()
+                    print(f"[prof] frame={prof['frame'] / n * 1000:5.1f}ms "
+                          f"write={prof['write'] / n * 1000:5.1f}ms "
+                          f"preview={prof['prev'] / n * 1000:5.1f}ms "
+                          f"wait={prof['wait'] / n * 1000:5.1f}ms "
+                          f"fps={n / (t4 - prof_t):4.1f} "
+                          f"mem={cur / 1e6:6.1f}MB threads={threading.active_count()} "
+                          f"screen={type(app.current).__name__}")
+                    cpu_now = time.process_time()
+                    print(f"        cpu_ratio={(cpu_now - cpu_t) / (t4 - prof_t):.2f}")
+                    cpu_t = cpu_now
+                    buf = io.StringIO()
+                    pstats.Stats(profiler, stream=buf).sort_stats("cumulative").print_stats(8)
+                    print(buf.getvalue())
+                    profiler = cProfile.Profile()
+                    prof.update(frame=0.0, write=0.0, prev=0.0, wait=0.0, n=0)
+                    prof_t = t4
     except KeyboardInterrupt:
         pass
     finally:
@@ -351,6 +433,8 @@ def main(argv=None) -> None:
         if ser is not None:
             _close_serial(ser, stop)
         pg.quit()
-
+ 
+ 
 if __name__ == "__main__":
     main()
+ 
