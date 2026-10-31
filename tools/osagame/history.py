@@ -51,7 +51,7 @@ class NameEntryScreen(Screen):
 
     def on_enter(self, app):
         self.inp.set_text("", typewriter=False)
-        self.msg.set_text(f"GAME OVER!\nSCORE: {self.score}\nPLZ ENTER NICKNAME\n(AND PRESS ENTER)")
+        self.msg.set_text(f"GAME OVER!\nSCORE: {self.score}\nPLEASE ENTER NICKNAME\n(AND PRESS ENTER)")
 
     def handle(self, app, key, ch=None):
         if key == "esc":
