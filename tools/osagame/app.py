@@ -98,6 +98,9 @@ class App:
         self.audio = NullAudio()     # main() が PygameAudio に差し替える
         self.screens: dict = {}
         self.current = None
+        # app.py: App.__init__ の中に追加
+        self.game_points = n_points
+
 
     def register(self, name: str, screen) -> None:
         self.screens[name] = screen
@@ -116,11 +119,19 @@ class App:
             return                   # メニューに留まる
         self.launch = (osa, wav, after)
 
-    def render(self, polys: list) -> np.ndarray:
-        """折れ線のリスト → (N, 2) uint8。何も無ければ中央に 1 点。"""
+    # def render(self, polys: list) -> np.ndarray:
+    #     """折れ線のリスト → (N, 2) uint8。何も無ければ中央に 1 点。"""
+    #     if not polys:
+    #         return np.full((self.n, 2), DAC_CENTER, dtype=np.uint8)
+    #     pts = polylines_to_path(polys, self.n)
+    #     return np.rint(np.clip(pts, 0, DAC_MAX)).astype(np.uint8)
+
+    # app.py: App.render を置き換え(merge=True は前回の変更)
+    def render(self, polys: list, n: int | None = None) -> np.ndarray:
+        n = n or self.n
         if not polys:
-            return np.full((self.n, 2), DAC_CENTER, dtype=np.uint8)
-        pts = polylines_to_path(polys, self.n)
+            return np.full((n, 2), DAC_CENTER, dtype=np.uint8)
+        pts = polylines_to_path(polys, n, merge=True)
         return np.rint(np.clip(pts, 0, DAC_MAX)).astype(np.uint8)
 
 

@@ -9,6 +9,7 @@ from osagame.app import SOURCE_DIR
 TETRIS_SOUND_DIR = SOURCE_DIR / "tetrissounds" 
 
 class TetrisScreen(Screen):
+    use_game_points = True
     def __init__(self, back="game"):
         self.back = back
         self.logic = None

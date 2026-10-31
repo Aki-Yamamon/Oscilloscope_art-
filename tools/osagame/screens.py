@@ -28,6 +28,8 @@ def play_se(app, path: Path) -> None:
 
 
 class Screen:
+    use_game_points = False          # ゲーム画面だけ True にする
+    
     def on_enter(self, app) -> None:
         pass
 
@@ -38,10 +40,8 @@ class Screen:
         return []
 
     def frame(self, app, dt: float) -> np.ndarray:
-        """(N, 2) uint8 を返す。"""
-        return app.render(self.polylines(app, dt))
-
-
+        n = app.game_points if self.use_game_points else None
+        return app.render(self.polylines(app, dt), n)
 class HomePreviewScreen(Screen):
     """メニューの HOME。home.osa だけを表示する(文字は出さない)。Enter か Esc でメニューへ戻る。"""
 
