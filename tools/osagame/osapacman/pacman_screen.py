@@ -8,6 +8,7 @@ from osagame.app import SOURCE_DIR
 PACSOUNDS_DIR = SOURCE_DIR / "pacsounds"
 
 class PacmanScreen(Screen):
+    use_game_points = True
     def __init__(self, back="game"):
         self.back = back
         self.logic = None

@@ -201,10 +201,80 @@ def _sample_arclength(p: np.ndarray, m: int) -> np.ndarray:
     return np.stack([np.interp(t, s, p[:, 0]), np.interp(t, s, p[:, 1])], axis=1)
 
 
+# ---------------------------------------------------------------- 重なった辺の整理
+
+def merge_polylines(polys: list[np.ndarray], tol: float = 1e-3) -> list[np.ndarray]:
+    """重なって描かれる辺を 1 本にし、つながる辺を、なるべく長い折れ線にまとめる。
+
+    隣り合うブロックが共有する辺(同じ線を 2 回描く無駄)をなくすので、線の総延長が減る。
+    1 フレームの点数 N は固定なので、総延長が減るほど、線 1 本あたりの点が増え、数珠つなぎになりにくい。
+    つなぎ直すことで、折れ線の本数(= ジャンプの回数)も減る。
+
+    - 見た目は変わらない(描く辺の集合は同じ)。頂点の位置も変えない
+    - 座標は tol の精度で「同じ点」とみなす
+    - 辺の途中で重なるだけの線(長い辺と、その一部にあたる短い辺)は、まとめられない
+    """
+    inv = 1.0 / tol
+    vid: dict[tuple[int, int], int] = {}
+    coords: list[tuple[float, float]] = []
+    adj: list[list[tuple[int, int]]] = []
+    edges: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    for p in polys:
+        prev = -1
+        for x, y in np.asarray(p, dtype=np.float64).tolist():
+            key = (round(x * inv), round(y * inv))
+            v = vid.get(key)
+            if v is None:
+                v = len(coords)
+                vid[key] = v
+                coords.append((x, y))
+                adj.append([])
+            if prev >= 0 and v != prev:
+                ek = (prev, v) if prev < v else (v, prev)
+                if ek not in seen:
+                    seen.add(ek)
+                    e = len(edges)
+                    edges.append(ek)
+                    adj[prev].append((v, e))
+                    adj[v].append((prev, e))
+            prev = v
+
+    used = [False] * len(edges)
+    ptr = [0] * len(coords)
+
+    def next_edge(v: int):
+        a = adj[v]
+        i = ptr[v]
+        while i < len(a) and used[a[i][1]]:
+            i += 1
+        ptr[v] = i
+        return a[i] if i < len(a) else None
+
+    # 次数が奇数の頂点から始めると、少ない本数で全部の辺をたどれる
+    starts = [v for v in range(len(coords)) if len(adj[v]) % 2 == 1] + list(range(len(coords)))
+    strokes: list[np.ndarray] = []
+    for s in starts:
+        while True:
+            ne = next_edge(s)
+            if ne is None:
+                break
+            path = [s]
+            while ne is not None:
+                w, e = ne
+                used[e] = True
+                path.append(w)
+                ne = next_edge(w)
+            strokes.append(np.array([coords[i] for i in path], dtype=np.float64))
+    return strokes
+
+
 def polylines_to_path(
     polylines: list[np.ndarray],
     n_points: int,
     return_jumps: bool = False,
+    merge: bool = False,
 ):
     """DAC 座標(0〜255)の折れ線のリストを、ちょうど n_points 点の経路にする。
 
@@ -212,11 +282,15 @@ def polylines_to_path(
     戻り値: (N, 2) float64。return_jumps=True なら、ジャンプ先の点の番号の配列も返す。
 
     ジャンプ(折れ線から次の折れ線への移動)には点を補間しない。
+    merge=True なら、先に merge_polylines で重なった辺を整理する(ゲーム画面など、辺を共有する図形向け)。
     """
     if n_points < 2:
         raise ValueError("n_points は 2 以上にしてください")
 
     polys = [q for q in (_clean(p) for p in polylines) if q is not None]
+    if merge and polys:
+        polys = merge_polylines(polys)
+
     if not polys:
         pts = np.full((n_points, 2), float(DAC_CENTER))
         return (pts, np.array([], dtype=int)) if return_jumps else pts
