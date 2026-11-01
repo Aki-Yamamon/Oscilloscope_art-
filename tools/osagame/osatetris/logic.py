@@ -62,8 +62,8 @@ class TetrisLogic:
         self.game_over = False
         self.fall_timer = 0.0
         
-        # 難易度調整: 初期速度を速く
-        self.fall_speed = 0.7 
+        # 難易度調整: 初速をかなり早く (0.7 -> 0.4)
+        self.fall_speed = 0.4 
         
         self.event_move = False
         self.event_rotate = False
@@ -188,9 +188,9 @@ class TetrisLogic:
         elif lines_cleared == 3: self.score += 500
         elif lines_cleared == 4: self.score += 800
         
-        # 難易度調整: スコアが上がるにつれて落下速度が指数関数的に速くなる
+        # 難易度調整: スコアによる加速をさらにシビアに (最小0.02秒で落ちるように)
         if lines_cleared > 0:
-            self.fall_speed = max(0.05, 0.7 * (0.85 ** (self.score / 500)))
+            self.fall_speed = max(0.02, 0.4 * (0.75 ** (self.score / 300)))
         
         return lines_cleared
 
