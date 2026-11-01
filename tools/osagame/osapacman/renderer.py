@@ -29,12 +29,11 @@ def draw_ghost(x, y, size):
 def render_pacman_scene(logic, time_t, state="play"):
     polys = []
     
-    # 画面上部UI (SCORE, STAGE, LIFE)
-    polys.extend(text_to_polylines(f"SCORE {logic.score}", 5, 245, 10))
-    polys.extend(text_to_polylines(f"STAGE {logic.stage}", 100, 245, 10))
-    polys.extend(text_to_polylines(f"LIFE {logic.lives}", 185, 245, 10))
+    # SCOREの文字を消し、数字のみ左詰め配置
+    polys.extend(text_to_polylines(str(logic.score), 5, 245, 8))
+    polys.extend(text_to_polylines(f"STAGE {logic.stage}", 100, 245, 8))
+    polys.extend(text_to_polylines(f"LIFE {logic.lives}", 185, 245, 8))
 
-    # エサの描画
     for y in range(logic.height):
         for x in range(logic.width):
             val = logic.grid[y][x]
@@ -47,7 +46,6 @@ def render_pacman_scene(logic, time_t, state="play"):
                 polys.append(np.array([(px-3, py), (px+3, py)], dtype=np.float64))
                 polys.append(np.array([(px, py-3), (px, py+3)], dtype=np.float64))
 
-    # 壁のワイヤーフレーム描画
     for y in range(logic.height):
         x = 0
         while x < logic.width:
@@ -89,10 +87,9 @@ def render_pacman_scene(logic, time_t, state="play"):
         return OFFSET_X + (ent.x + dx * ent.move_frac) * CELL + CELL/2, \
                OFFSET_Y - (ent.y + dy * ent.move_frac) * CELL - CELL/2
 
-    # パックマンの描画 (死亡時は高速で点滅させる)
     if state != "dead" or (state == "dead" and int(time_t * 15) % 2 == 0):
         px, py = get_pos(logic.pacman)
-        mouth_open = (math.sin(time_t * 15) + 1) / 2 if state == "play" else 1.0 # 死んでいる時は口を開いたまま
+        mouth_open = (math.sin(time_t * 15) + 1) / 2 if state == "play" else 1.0 
         mouth_angle = mouth_open * (math.pi / 4)
         
         base_ang = 0
@@ -103,7 +100,6 @@ def render_pacman_scene(logic, time_t, state="play"):
         
         polys.append(draw_circle(px, py, CELL/2 - 1.5, base_ang + mouth_angle, base_ang + 2*math.pi - mouth_angle))
 
-    # ゴーストの描画 (ゲームオーバー時・死亡時は非表示)
     if state != "dead" and state != "gameover":
         for g in logic.ghosts:
             gx, gy = get_pos(g)
@@ -113,10 +109,10 @@ def render_pacman_scene(logic, time_t, state="play"):
                 g_poly[:, 0] += shake
             polys.append(g_poly)
 
-    # 状態テキスト (CLEARテキストは廃止)
     if state == "start":
         polys.extend(text_to_polylines("READY!", 100, 120, 14))
     elif state == "gameover":
         polys.extend(text_to_polylines("GAME OVER", 80, 120, 14))
+        polys.extend(text_to_polylines("PRESS ENTER", 80, 95, 10))
 
     return polys
